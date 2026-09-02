@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>植物図鑑</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js"></script>
+<style>
+  :root {
+    --bg-success: #e6f4ea;
+    --text-success: #2e7d4f;
+    --border-success: #a8d5b8;
+    --surface-1: #f7f7f5;
+    --surface-2: #ffffff;
+    --border: #e3e2df;
+    --border-strong: #c9c8c3;
+    --text-primary: #1f1f1d;
+    --text-secondary: #6b6a66;
+    --text-muted: #9c9b96;
+    --text-accent: #6a5acd;
+    --text-danger: #c0392b;
+    --bg-accent-muted: #efecfb;
+    --fill-primary: #2e7d4f;
+    --on-primary: #ffffff;
+    --fill-danger: #e74c3c;
+    --on-danger: #ffffff;
+    --fill-field: #ffffff;
+    --radius: 8px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: var(--font-sans); background: var(--surface-1); color: var(--text-primary);
+    max-width: 480px; margin-left: auto; margin-right: auto; padding: 16px; padding-bottom: 60px;
+  }
+  button {
+    font-family: var(--font-sans); border-radius: var(--radius); border: 0.5px solid var(--border-strong);
+    background: var(--surface-2); color: var(--text-primary); cursor: pointer; font-size: 14px;
+  }
+  button:active { opacity: 0.8; }
+  input, select, textarea {
+    font-family: var(--font-sans); border-radius: var(--radius); border: 0.5px solid var(--border);
+    background: var(--fill-field); color: var(--text-primary); font-size: 14px; padding: 8px 10px; height: 40px;
+  }
+  textarea { height: auto; }
+  select { height: 40px; }
+  img { max-width: 100%; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<h2 class="sr-only">植物の記録・図鑑アプリ</h2>
+<div id="app"></div>
+
+<script>
+let plants = [];
+let classList = ['サボテン科','ベンケイソウ科','トウダイグサ科','キョウチクトウ科'];
+let genusList = ['アストロフィツム属','ハウォルチア属','ユーフォルビア属','エケベリア属'];
+let view = { screen: 'list', plantId: null, mode: 'all', query: '', sortBy: 'name' };
+let pendingPhotos = [];
+let pendingLogPhotos = [];
+let scanStream = null;
+let scanRAF = null;
+
+// --- storage: uses localStorage so data persists in this browser ---
+const storage = {
+  async get(key) { const v = localStorage.getItem(key); return v === null ? null : { value: v }; },
+  async set(key, value) { localStorage.setItem(key, value); return { key, value }; }
+};
+
+async function loadAll() {
+  try { const r = await storage.get('plants-data'); plants = r ? JSON.parse(r.value) : []; } catch(e) { plants = []; }
+  try { const r = await storage.get('class-list'); if (r) classList = JSON.parse(r.value); } catch(e) {}
+  try { const r = await storage.get('genus-list'); if (r) genusList = JSON.parse(r.value); } catch(e) {}
+  render();
+}
+async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} }
+async function saveClassList() { try { await storage.set('class-list', JSON.stringify(classList)); } catch(e){} }
+async function saveGenusList() { try { await storage.set('genus-list', JSON.stringify(genusList)); } catch(e){} }
+
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function fmtDate(iso){ const d=new Date(iso); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); }
+function daysSince(iso){ return Math.floor((Date.now()-new Date(iso).getTime())/86400000); }
+function pad(n,len){ return String(n).padStart(len,'0'); }
+function escapeHtml(str){ const d=document.createElement('div'); d.textContent=str||''; return d.innerHTML; }
+function latestLogDate(p){ const logs=p.logs||[]; if(!logs.length) return p.addedDate; return logs.reduce((m,l)=> l.date>m?l.date:m, logs[0].date); }
+
+function hashHue(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h*31+str.charCodeAt(i))%360; } return h; }
+function tagColor(t){ const hue=hashHue(t); return { bg:'hsl('+hue+', 65%, 93%)', fg:'hsl('+hue+', 55%, 32%)' }; }
+function tagChipHtml(t, extra){ const c=tagColor(t); return '<span '+(extra||'')+' style="font-size:12px; background:'+c.bg+'; color:'+c.fg+'; padding:3px 8px; border-radius:var(--radius); display:inline-block;">#'+escapeHtml(t)+'</span>'; }
+
+function genManagementNumber(classification, genus){
+  let ci=classList.indexOf(classification); if(ci<0) ci=classList.length;
+  let gi=genusList.indexOf(genus); if(gi<0) gi=genusList.length;
+  const seq=plants.filter(p=>p.classification===classification && p.genus===genus).length+1;
+  return pad(ci+1,2)+'-'+pad(gi+1,2)+'-'+pad(seq,3);
+}
+function allTags(){ const s=new Set(); plants.forEach(p=>(p.hashtags||[]).forEach(t=>s.add(t))); return Array.from(s); }
+function usedClassifications(){ const s=new Set(); plants.forEach(p=>{ if(p.classification) s.add(p.classification); }); return Array.from(s); }
+function matchesQuery(p,q){
+  if(!q) return true;
+  const needle=q.toLowerCase().replace(/^#/,'');
+  if(p.name.toLowerCase().includes(needle)) return true;
+  if((p.classification||'').toLowerCase().includes(needle)) return true;
+  if((p.genus||'').toLowerCase().includes(needle)) return true;
+  if((p.managementNumber||'').toLowerCase().includes(needle)) return true;
+  if((p.hashtags||[]).some(t=>t.toLowerCase().includes(needle))) return true;
+  return false;
+}
+function sortPlants(arr){
+  const a = arr.slice();
+  if (view.sortBy === 'addedDate') return a.sort((x,y)=> new Date(y.addedDate)-new Date(x.addedDate));
+  if (view.sortBy === 'lastLog') return a.sort((x,y)=> new Date(latestLogDate(y))-new Date(latestLogDate(x)));
+  return a.sort((x,y)=>x.name.localeCompare(y.name,'ja'));
+}
+
+function render() {
+  const app = document.getElementById('app');
+  stopScan();
+  if (view.screen === 'list') { app.innerHTML = renderList(); bindListEvents(); }
+  else if (view.screen === 'add') { app.innerHTML = renderForm(null); bindFormEvents(null); }
+  else if (view.screen === 'edit') { app.innerHTML = renderForm(view.plantId); bindFormEvents(view.plantId); }
+  else if (view.screen === 'detail') { app.innerHTML = renderDetail(view.plantId); bindDetailEvents(); }
+  else if (view.screen === 'logAdd') { app.innerHTML = renderLogForm(view.plantId); bindLogEvents(); }
+  else if (view.screen === 'scan') { app.innerHTML = renderScan(); bindScanEvents(); }
+}
+
+function pillBtn(key, label, active) {
+  return '<button class="mode-btn" data-key="'+escapeHtml(key)+'" style="flex-shrink:0; height:30px; padding:0 12px; font-size:13px; white-space:nowrap; ' +
+    (active ? 'background:var(--bg-success); color:var(--text-success); border:0.5px solid var(--border-success);' : '') + '">'+escapeHtml(label)+'</button>';
+}
+
+function plantCard(p) {
+  const thumb = (p.photos && p.photos[0]) ? p.photos[0] : null;
+  let html = '<div class="plant-card" data-id="'+p.id+'" style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:12px; padding:0.7rem 1rem; display:flex; align-items:center; gap:12px; cursor:pointer;">';
+  if (thumb) html += '<img src="'+thumb+'" style="width:44px; height:44px; border-radius:10px; object-fit:cover; flex-shrink:0;" />';
+  else html += '<div style="width:44px; height:44px; border-radius:10px; background:var(--bg-success); display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-plant" style="font-size:20px; color:var(--text-success);" aria-hidden="true"></i></div>';
+  html += '<div style="flex:1; min-width:0;">';
+  html += '<div style="display:flex; align-items:center; gap:6px;"><p style="font-weight:500; font-size:15px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+escapeHtml(p.name)+'</p></div>';
+  html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0;">'+escapeHtml(p.managementNumber)+' ・ '+escapeHtml(p.classification||'')+' ・ お迎えから'+daysSince(p.addedDate)+'日</p>';
+  if ((p.hashtags||[]).length) html += '<p style="margin:4px 0 0; display:flex; gap:4px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</p>';
+  html += '</div><i class="ti ti-chevron-right" style="font-size:18px; color:var(--text-muted);" aria-hidden="true"></i></div>';
+  return html;
+}
+
+function emptyState(msg) {
+  return '<div style="text-align:center; padding:2.5rem 1rem; color:var(--text-secondary);">' +
+    '<i class="ti ti-seeding" style="font-size:32px; display:block; margin-bottom:12px; color:var(--text-muted);" aria-hidden="true"></i>' +
+    '<p style="font-size:14px; margin:0;">'+escapeHtml(msg)+'</p></div>';
+}
+
+function renderList() {
+  let html = '';
+  html += '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.85rem;">';
+  html += '<h3 style="margin:0; font-size:18px; font-weight:500;">植物図鑑</h3>';
+  html += '<div style="display:flex; gap:6px;">';
+  html += '<button id="scan-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-qrcode" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<button id="add-btn" style="display:flex; align-items:center; gap:6px; padding:0 14px; height:36px;"><i class="ti ti-plus" style="font-size:18px;" aria-hidden="true"></i>追加</button>';
+  html += '</div></div>';
+
+  html += '<div style="position:relative; margin-bottom:0.6rem;">';
+  html += '<i class="ti ti-search" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); font-size:16px; color:var(--text-muted);" aria-hidden="true"></i>';
+  html += '<input id="search-input" type="text" placeholder="名前・#タグ・分類で検索" value="'+escapeHtml(view.query)+'" style="width:100%; padding-left:34px;" />';
+  html += '</div>';
+
+  html += '<div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; margin-bottom:0.75rem;">';
+  html += '<span style="font-size:12px; color:var(--text-muted);">並び替え</span>';
+  html += '<select id="sort-select" style="height:30px; font-size:12px; padding:0 8px;">';
+  html += '<option value="name" '+(view.sortBy==='name'?'selected':'')+'>名前順</option>';
+  html += '<option value="addedDate" '+(view.sortBy==='addedDate'?'selected':'')+'>お迎え日順</option>';
+  html += '<option value="lastLog" '+(view.sortBy==='lastLog'?'selected':'')+'>記録が新しい順</option>';
+  html += '</select></div>';
+
+  html += '<div style="display:flex; gap:6px; overflow-x:auto; padding-bottom:8px; margin-bottom:0.75rem;">';
+  html += pillBtn('all', 'すべて', view.mode === 'all');
+  html += pillBtn('tag', 'ハッシュタグ別', view.mode === 'tag');
+  html += pillBtn('class', '分類別', view.mode === 'class');
+  html += '</div>';
+
+  const q = view.query.trim();
+
+  if (view.mode === 'all') {
+    const filtered = sortPlants(plants.filter(p => matchesQuery(p, q)));
+    if (filtered.length === 0) html += emptyState('該当する植物がありません');
+    else { html += '<div style="display:flex; flex-direction:column; gap:10px;">'; filtered.forEach(p => { html += plantCard(p); }); html += '</div>'; }
+  } else if (view.mode === 'tag') {
+    const tags = allTags(); let any = false;
+    tags.forEach(t => {
+      const group = sortPlants(plants.filter(p => (p.hashtags||[]).includes(t) && matchesQuery(p, q)));
+      if (group.length === 0) return; any = true;
+      const c = tagColor(t);
+      html += '<p style="font-size:13px; font-weight:600; color:'+c.fg+'; margin:0.9rem 0 8px;">#'+escapeHtml(t)+'</p>';
+      html += '<div style="display:flex; flex-direction:column; gap:10px;">'; group.forEach(p => { html += plantCard(p); }); html += '</div>';
+    });
+    if (!any) html += emptyState('該当する植物がありません');
+  } else if (view.mode === 'class') {
+    const classes = usedClassifications(); let any = false;
+    classes.forEach(c => {
+      const group = sortPlants(plants.filter(p => p.classification === c && matchesQuery(p, q)));
+      if (group.length === 0) return; any = true;
+      html += '<p style="font-size:13px; font-weight:500; color:var(--text-accent); margin:0.9rem 0 8px;">'+escapeHtml(c)+'</p>';
+      html += '<div style="display:flex; flex-direction:column; gap:10px;">'; group.forEach(p => { html += plantCard(p); }); html += '</div>';
+    });
+    if (!any) html += emptyState('該当する植物がありません');
+  }
+  return html;
+}
+
+function bindListEvents() {
+  document.getElementById('add-btn').onclick = () => { pendingPhotos=[]; view = { screen:'add', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  document.getElementById('scan-btn').onclick = () => { view = { screen:'scan', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  const searchInput = document.getElementById('search-input');
+  searchInput.oninput = () => { view.query = searchInput.value; render(); const si=document.getElementById('search-input'); si.focus(); si.setSelectionRange(view.query.length, view.query.length); };
+  document.getElementById('sort-select').onchange = (e) => { view.sortBy = e.target.value; render(); };
+  document.querySelectorAll('.mode-btn').forEach(b => { b.onclick = () => { view.mode = b.dataset.key; render(); }; });
+  document.querySelectorAll('.plant-card').forEach(el => { el.onclick = () => { view = { screen:'detail', plantId: el.dataset.id, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); }; });
+}
+
+function renderScan() {
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
+  html += '<button id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:18px; font-weight:500;">QRコードを読み取る</h3></div>';
+  html += '<div style="position:relative; width:100%; aspect-ratio:1; background:#000; border-radius:12px; overflow:hidden;">';
+  html += '<video id="scan-video" playsinline style="width:100%; height:100%; object-fit:cover;"></video>';
+  html += '</div>';
+  html += '<p id="scan-status" style="text-align:center; font-size:13px; color:var(--text-muted); margin-top:12px;">ラベルのQRコードを枠内に映してください</p>';
+  return html;
+}
+
+function stopScan() {
+  if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = null; }
+  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+}
+
+async function bindScanEvents() {
+  document.getElementById('back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  const video = document.getElementById('scan-video');
+  const statusEl = document.getElementById('scan-status');
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.srcObject = scanStream;
+    await video.play();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const tick = () => {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height);
+        if (code && code.data) {
+          const text = code.data;
+          const found = plants.find(p => text.includes(p.managementNumber));
+          if (found) {
+            stopScan();
+            view = { screen:'detail', plantId: found.id, mode:view.mode, query:view.query, sortBy:view.sortBy };
+            render();
+            return;
+          } else {
+            statusEl.textContent = '一致する植物が見つかりません';
+          }
+        }
+      }
+      scanRAF = requestAnimationFrame(tick);
+    };
+    scanRAF = requestAnimationFrame(tick);
+  } catch (e) {
+    statusEl.textContent = 'カメラを利用できません。ブラウザの設定でカメラへのアクセスを許可してください。';
+  }
+}
+
+function selectWithAdd(id, list, selectedVal, placeholder) {
+  let html = '<select id="'+id+'" style="width:100%; margin-bottom:6px;">';
+  html += '<option value="">選択してください</option>';
+  list.forEach(v => { html += '<option value="'+escapeHtml(v)+'" '+(v===selectedVal?'selected':'')+'>'+escapeHtml(v)+'</option>'; });
+  html += '<option value="__new__">＋ 新規追加</option></select>';
+  html += '<input id="'+id+'-new" type="text" placeholder="'+escapeHtml(placeholder||'新しい項目名')+'" style="width:100%; display:none; margin-bottom:1rem;" />';
+  return html;
+}
+
+function renderPhotoPicker(existing, idPrefix) {
+  idPrefix = idPrefix || '';
+  let html = '<div id="'+idPrefix+'photo-grid" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:0.5rem;">';
+  existing.forEach((src,i) => {
+    html += '<div style="position:relative; width:64px; height:64px;"><img src="'+src+'" style="width:64px; height:64px; object-fit:cover; border-radius:8px;" />';
+    html += '<button type="button" class="'+idPrefix+'photo-remove" data-i="'+i+'" style="position:absolute; top:-6px; right:-6px; width:20px; height:20px; padding:0; border-radius:50%; background:var(--fill-danger); border:none; display:flex; align-items:center; justify-content:center;"><i class="ti ti-x" style="font-size:12px; color:var(--on-danger);" aria-hidden="true"></i></button></div>';
+  });
+  html += '<label for="'+idPrefix+'photo-input" style="width:64px; height:64px; border-radius:8px; border:0.5px dashed var(--border-strong); display:flex; align-items:center; justify-content:center; cursor:pointer; background:var(--surface-1);"><i class="ti ti-camera-plus" style="font-size:20px; color:var(--text-muted);" aria-hidden="true"></i></label>';
+  html += '<input id="'+idPrefix+'photo-input" type="file" accept="image/*" style="display:none;" />';
+  html += '</div>';
+  return html;
+}
+
+function resizeImage(file, maxW) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width * scale; canvas.height = img.height * scale;
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderTagPicker(existing) {
+  let html = '<div id="tag-list" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">';
+  existing.forEach((t,i) => {
+    html += tagChipHtml(t, 'class="tag-chip" data-i="'+i+'"').replace('</span>', ' <i class="ti ti-x tag-remove" data-i="'+i+'" style="font-size:12px; cursor:pointer;" aria-hidden="true"></i></span>');
+  });
+  html += '</div>';
+  const avail = allTags().filter(t => !existing.includes(t));
+  html += '<div id="tag-select-wrap">' + selectWithAdd('tag-select', avail, '', '例: 要観察') + '</div>';
+  html += '<button type="button" id="tag-add-btn" style="width:100%; height:36px; margin-bottom:1rem; display:flex; align-items:center; justify-content:center; gap:6px;"><i class="ti ti-plus" style="font-size:15px;" aria-hidden="true"></i>タグを追加</button>';
+  return html;
+}
+
+function renderForm(editId) {
+  const p = editId ? plants.find(x=>x.id===editId) : null;
+  pendingPhotos = p ? (p.photos||[]).slice() : [];
+  let tags = p ? (p.hashtags||[]).slice() : [];
+  window.__formTags = tags;
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1.25rem;">';
+  html += '<button id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:18px; font-weight:500;">'+(p?'植物を編集':'植物を追加')+'</h3></div>';
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">写真</label>';
+  html += renderPhotoPicker(pendingPhotos, '');
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin:1rem 0 6px;">名前</label>';
+  html += '<input id="f-name" type="text" placeholder="例: 兜(アストロフィツム)" value="'+(p?escapeHtml(p.name):'')+'" style="width:100%; margin-bottom:1rem;" />';
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">分類(科)</label>';
+  html += selectWithAdd('f-class', classList, p?p.classification:'', '例: リプサリス科');
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">属</label>';
+  html += selectWithAdd('f-genus', genusList, p?p.genus:'', '例: リプサリス属');
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">お迎えした日</label>';
+  html += '<input id="f-date" type="date" value="'+(p?p.addedDate:new Date().toISOString().slice(0,10))+'" style="width:100%; margin-bottom:1rem;" />';
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">メモ</label>';
+  html += '<textarea id="f-notes" rows="3" placeholder="置き場所や特徴など" style="width:100%; margin-bottom:8px; padding:8px; font-family:var(--font-sans); font-size:14px; border-radius:var(--radius); border:0.5px solid var(--border); background:var(--fill-field);">'+(p?escapeHtml(p.notes):'')+'</textarea>';
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">ハッシュタグ(任意)</label>';
+  html += '<div id="tag-picker-wrap">' + renderTagPicker(tags) + '</div>';
+
+  html += '<p id="f-error" style="display:none; color:var(--text-danger); font-size:13px; margin:0 0 12px;"></p>';
+  html += '<button id="save-btn" style="width:100%; height:40px; background:var(--fill-primary); color:var(--on-primary); border:none;">保存</button>';
+  return html;
+}
+
+function bindSelectWithAdd(id) {
+  const sel = document.getElementById(id);
+  const newInput = document.getElementById(id+'-new');
+  sel.onchange = () => { if (sel.value === '__new__') { newInput.style.display = 'block'; newInput.focus(); } else { newInput.style.display = 'none'; } };
+}
+
+function bindPhotoPicker(pendingArrRef, idPrefix, refreshFn) {
+  document.getElementById(idPrefix+'photo-input').onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const dataUrl = await resizeImage(file, 400);
+    if (pendingArrRef.length >= 4) pendingArrRef.shift();
+    pendingArrRef.push(dataUrl); refreshFn();
+  };
+  document.querySelectorAll('.'+idPrefix+'photo-remove').forEach(b => { b.onclick = () => { pendingArrRef.splice(Number(b.dataset.i),1); refreshFn(); }; });
+}
+function refreshPhotoGrid() { document.getElementById('photo-grid').outerHTML = renderPhotoPicker(pendingPhotos, ''); bindPhotoPicker(pendingPhotos, '', refreshPhotoGrid); }
+function refreshLogPhotoGrid() { document.getElementById('log-photo-grid').outerHTML = renderPhotoPicker(pendingLogPhotos, 'log-'); bindPhotoPicker(pendingLogPhotos, 'log-', refreshLogPhotoGrid); }
+
+function refreshTagPicker() { document.getElementById('tag-picker-wrap').innerHTML = renderTagPicker(window.__formTags); bindTagPickerEvents(); }
+function bindTagPickerEvents() {
+  document.querySelectorAll('.tag-remove').forEach(b => { b.onclick = (e) => { e.stopPropagation(); window.__formTags.splice(Number(b.dataset.i),1); refreshTagPicker(); }; });
+  bindSelectWithAdd('tag-select');
+  document.getElementById('tag-add-btn').onclick = () => {
+    const sel = document.getElementById('tag-select');
+    let v = sel.value; if (v === '__new__') v = document.getElementById('tag-select-new').value.trim();
+    v = v.replace(/^#/, '');
+    if (v && !window.__formTags.includes(v)) { window.__formTags.push(v); refreshTagPicker(); }
+  };
+}
+
+function bindFormEvents(editId) {
+  document.getElementById('back-btn').onclick = () => { view = { screen: editId?'detail':'list', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); };
+  bindSelectWithAdd('f-class'); bindSelectWithAdd('f-genus');
+  bindPhotoPicker(pendingPhotos, '', refreshPhotoGrid);
+  bindTagPickerEvents();
+
+  document.getElementById('save-btn').onclick = async () => {
+    const errEl = document.getElementById('f-error');
+    const name = document.getElementById('f-name').value.trim();
+    let classification = document.getElementById('f-class').value;
+    if (classification === '__new__') classification = document.getElementById('f-class-new').value.trim();
+    let genus = document.getElementById('f-genus').value;
+    if (genus === '__new__') genus = document.getElementById('f-genus-new').value.trim();
+    if (!name || !classification || !genus) { errEl.textContent = '名前・分類・属は必須です'; errEl.style.display = 'block'; return; }
+    errEl.style.display = 'none';
+    if (!classList.includes(classification)) { classList.push(classification); await saveClassList(); }
+    if (!genusList.includes(genus)) { genusList.push(genus); await saveGenusList(); }
+    const date = document.getElementById('f-date').value;
+    const notes = document.getElementById('f-notes').value.trim();
+    const finalTags = window.__formTags.slice();
+    if (editId) {
+      const p = plants.find(x=>x.id===editId);
+      p.name=name; p.classification=classification; p.genus=genus; p.addedDate=date; p.notes=notes;
+      p.hashtags = finalTags; p.photos = pendingPhotos.slice();
+      await savePlants();
+      view = { screen:'detail', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy };
+    } else {
+      const managementNumber = genManagementNumber(classification, genus);
+      const newPlant = { id: uid(), name, classification, genus, managementNumber, addedDate: date, notes, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [] };
+      plants.push(newPlant);
+      await savePlants();
+      view = { screen:'detail', plantId: newPlant.id, mode: view.mode, query: view.query, sortBy: view.sortBy };
+    }
+    render();
+  };
+}
+
+function renderDetail(id) {
+  const p = plants.find(x=>x.id===id);
+  if (!p) { view = { screen:'list', plantId:null, mode:'all', query:'', sortBy:'name' }; return renderList(); }
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
+  html += '<button id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:18px; font-weight:500; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+escapeHtml(p.name)+'</h3>';
+  html += '<button id="edit-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-edit" style="font-size:16px;" aria-hidden="true"></i></button>';
+  html += '<button id="del-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-trash" style="font-size:16px; color:var(--text-danger);" aria-hidden="true"></i></button>';
+  html += '</div>';
+
+  if ((p.photos||[]).length) {
+    html += '<div style="display:flex; gap:8px; overflow-x:auto; margin-bottom:1rem;">';
+    p.photos.forEach(src => { html += '<img src="'+src+'" style="width:88px; height:88px; object-fit:cover; border-radius:10px; flex-shrink:0;" />'; });
+    html += '</div>';
+  }
+
+  html += '<div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:12px; padding:1rem 1.25rem; margin-bottom:1rem;">';
+  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">管理番号 <span style="color:var(--text-primary); font-weight:500;">'+escapeHtml(p.managementNumber)+'</span></p>';
+  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">分類: '+escapeHtml(p.classification)+' ・ 属: '+escapeHtml(p.genus)+'</p>';
+  html += '<p style="margin:0 0 8px; font-size:13px; color:var(--text-muted);">お迎え日 '+fmtDate(p.addedDate)+'(お迎えから'+daysSince(p.addedDate)+'日)</p>';
+  if (p.notes) html += '<div style="border-top:0.5px solid var(--border); padding-top:8px; font-size:13px; color:var(--text-secondary); line-height:1.6;">'+escapeHtml(p.notes)+'</div>';
+  if ((p.hashtags||[]).length) html += '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</div>';
+  html += '</div>';
+
+  html += '<div id="qr-holder" style="display:flex; flex-direction:column; align-items:center; gap:10px; background:var(--surface-1); border-radius:12px; padding:1rem; margin-bottom:1rem;">';
+  html += '<div id="qr-code"></div>';
+  html += '<p style="font-size:12px; color:var(--text-muted); margin:0;">QRコード ('+escapeHtml(p.managementNumber)+')</p>';
+  html += '<div style="display:flex; gap:8px; width:100%;">';
+  html += '<button id="label-download-btn" style="flex:1; height:34px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px;"><i class="ti ti-download" style="font-size:15px;" aria-hidden="true"></i>ラベル画像</button>';
+  html += '<button id="label-print-btn" style="flex:1; height:34px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px;"><i class="ti ti-printer" style="font-size:15px;" aria-hidden="true"></i>印刷</button>';
+  html += '</div>';
+  html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">ラベル画像はピータッチ キューブアプリに読み込んで印刷できます</p>';
+  html += '</div>';
+  html += '<div id="label-print-area" style="display:none;"></div>';
+
+  const logsAll = p.logs || [];
+  const timelinePhotos = [];
+  logsAll.slice().sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(l => { (l.photos||[]).forEach(src => timelinePhotos.push({ src, date: l.date })); });
+  if (timelinePhotos.length > 0) {
+    html += '<p style="margin:0 0 8px; font-size:14px; font-weight:500;">成長タイムライン</p>';
+    html += '<div style="display:flex; gap:8px; overflow-x:auto; margin-bottom:1.25rem; padding-bottom:4px;">';
+    timelinePhotos.forEach(tp => {
+      html += '<div style="flex-shrink:0; text-align:center;"><img src="'+tp.src+'" style="width:76px; height:76px; object-fit:cover; border-radius:10px;" /><p style="font-size:10px; color:var(--text-muted); margin:4px 0 0;">'+fmtDate(tp.date)+'</p></div>';
+    });
+    html += '</div>';
+  }
+
+  html += '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">';
+  html += '<p style="margin:0; font-size:14px; font-weight:500;">成長記録</p>';
+  html += '<button id="log-add-btn" style="height:32px; padding:0 12px; display:flex; align-items:center; gap:4px; font-size:13px;"><i class="ti ti-plus" style="font-size:15px;" aria-hidden="true"></i>記録</button>';
+  html += '</div>';
+
+  const logs = logsAll.slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
+  if (logs.length === 0) html += '<p style="font-size:13px; color:var(--text-muted); text-align:center; padding:1.5rem 0;">まだ記録がありません</p>';
+  else {
+    html += '<div style="display:flex; flex-direction:column; gap:8px;">';
+    logs.forEach(l => {
+      html += '<div style="background:var(--surface-1); border-radius:var(--radius); padding:10px 12px;">';
+      html += '<div style="display:flex; justify-content:space-between; align-items:baseline;"><span style="font-size:12px; color:var(--text-secondary);">'+fmtDate(l.date)+'</span></div>';
+      if ((l.photos||[]).length) {
+        html += '<div style="display:flex; gap:6px; overflow-x:auto; margin:6px 0;">';
+        l.photos.forEach(src => { html += '<img src="'+src+'" style="width:64px; height:64px; object-fit:cover; border-radius:8px; flex-shrink:0;" />'; });
+        html += '</div>';
+      }
+      if (l.note) html += '<p style="margin:4px 0 0; font-size:13px; line-height:1.5;">'+escapeHtml(l.note)+'</p>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+  return html;
+}
+
+function bindDetailEvents() {
+  const p = plants.find(x=>x.id===view.plantId);
+  document.getElementById('back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  document.getElementById('edit-btn').onclick = () => { view = { screen:'edit', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  document.getElementById('del-btn').onclick = async () => {
+    plants = plants.filter(x=>x.id!==p.id); await savePlants();
+    view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render();
+  };
+  document.getElementById('log-add-btn').onclick = () => { pendingLogPhotos=[]; view = { screen:'logAdd', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+
+  new QRCode(document.getElementById('qr-code'), { text: p.managementNumber+' '+p.name, width: 120, height: 120 });
+
+  document.getElementById('label-download-btn').onclick = () => {
+    const qrImg = document.querySelector('#qr-code img, #qr-code canvas');
+    const canvas = document.createElement('canvas'); canvas.width = 400; canvas.height = 140;
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    const draw = () => {
+      ctx.drawImage(qrImg, 10, 10, 120, 120);
+      ctx.fillStyle = '#000000'; ctx.font = '500 20px sans-serif'; ctx.fillText(p.name, 145, 45);
+      ctx.font = '400 15px sans-serif'; ctx.fillText(p.managementNumber, 145, 75);
+      ctx.fillText(p.classification+' / '+p.genus, 145, 100);
+      canvas.toBlob((blob) => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'label_'+p.managementNumber+'.png'; a.click(); URL.revokeObjectURL(url); });
+    };
+    if (qrImg.tagName === 'IMG' && !qrImg.complete) { qrImg.onload = draw; } else { draw(); }
+  };
+
+  document.getElementById('label-print-btn').onclick = () => {
+    const qrImg = document.querySelector('#qr-code img, #qr-code canvas');
+    const src = qrImg.tagName === 'IMG' ? qrImg.src : qrImg.toDataURL();
+    const area = document.getElementById('label-print-area');
+    area.innerHTML = '<style>@media print { body * { visibility: hidden; } #print-label, #print-label * { visibility: visible; } #print-label { position: absolute; top:0; left:0; width:70mm; height:24mm; display:flex; align-items:center; gap:4mm; padding:2mm; } }</style>' +
+      '<div id="print-label"><img src="'+src+'" style="width:18mm; height:18mm;" /><div style="font-family:sans-serif;"><div style="font-size:10px; font-weight:bold;">'+escapeHtml(p.name)+'</div><div style="font-size:8px;">'+escapeHtml(p.managementNumber)+'</div></div></div>';
+    window.print();
+  };
+}
+
+function renderLogForm(plantId) {
+  const p = plants.find(x=>x.id===plantId);
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1.25rem;">';
+  html += '<button id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:18px; font-weight:500;">'+escapeHtml(p?p.name:'')+' の記録</h3></div>';
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">写真</label>';
+  html += renderPhotoPicker(pendingLogPhotos, 'log-');
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin:1rem 0 6px;">メモ</label>';
+  html += '<textarea id="l-note" rows="3" placeholder="新しい葉が出た、植え替えたなど" style="width:100%; margin-bottom:1.25rem; padding:8px; font-family:var(--font-sans); font-size:14px; border-radius:var(--radius); border:0.5px solid var(--border); background:var(--fill-field);"></textarea>';
+  html += '<p id="l-error" style="display:none; color:var(--text-danger); font-size:13px; margin:0 0 12px;"></p>';
+  html += '<button id="l-save-btn" style="width:100%; height:40px; background:var(--fill-primary); color:var(--on-primary); border:none;">記録を保存</button>';
+  return html;
+}
+function bindLogEvents() {
+  document.getElementById('back-btn').onclick = () => { view = { screen:'detail', plantId:view.plantId, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  bindPhotoPicker(pendingLogPhotos, 'log-', refreshLogPhotoGrid);
+  document.getElementById('l-save-btn').onclick = async () => {
+    const errEl = document.getElementById('l-error');
+    const note = document.getElementById('l-note').value.trim();
+    if (!note && pendingLogPhotos.length === 0) { errEl.textContent='写真かメモのどちらかを入力してください'; errEl.style.display='block'; return; }
+    errEl.style.display = 'none';
+    const p = plants.find(x=>x.id===view.plantId);
+    if (!p.logs) p.logs = [];
+    p.logs.push({ id: uid(), date: new Date().toISOString().slice(0,10), note, photos: pendingLogPhotos.slice() });
+    await savePlants();
+    view = { screen:'detail', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy };
+    render();
+  };
+}
+
+loadAll();
+</script>
+</body>
+</html>
