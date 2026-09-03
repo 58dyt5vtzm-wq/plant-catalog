@@ -81,11 +81,11 @@ async function saveClassList() { try { await storage.set('class-list', JSON.stri
 async function saveGenusList() { try { await storage.set('genus-list', JSON.stringify(genusList)); } catch(e){} }
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
-function fmtDate(iso){ const d=new Date(iso); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); }
+function fmtDate(iso){ if(!iso) return '未設定'; const d=new Date(iso); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); }
 function daysSince(iso){ return Math.floor((Date.now()-new Date(iso).getTime())/86400000); }
 function pad(n,len){ return String(n).padStart(len,'0'); }
 function escapeHtml(str){ const d=document.createElement('div'); d.textContent=str||''; return d.innerHTML; }
-function latestLogDate(p){ const logs=p.logs||[]; if(!logs.length) return p.addedDate; return logs.reduce((m,l)=> l.date>m?l.date:m, logs[0].date); }
+function latestLogDate(p){ const logs=p.logs||[]; if(!logs.length) return p.addedDate||''; return logs.reduce((m,l)=> l.date>m?l.date:m, logs[0].date); }
 
 function hashHue(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h*31+str.charCodeAt(i))%360; } return h; }
 function tagColor(t){ const hue=hashHue(t); return { bg:'hsl('+hue+', 65%, 93%)', fg:'hsl('+hue+', 55%, 32%)' }; }
@@ -106,13 +106,20 @@ function matchesQuery(p,q){
   if((p.classification||'').toLowerCase().includes(needle)) return true;
   if((p.genus||'').toLowerCase().includes(needle)) return true;
   if((p.managementNumber||'').toLowerCase().includes(needle)) return true;
+  if((p.purchaseLocation||'').toLowerCase().includes(needle)) return true;
+  if((p.eventInfo||'').toLowerCase().includes(needle)) return true;
   if((p.hashtags||[]).some(t=>t.toLowerCase().includes(needle))) return true;
   return false;
 }
 function sortPlants(arr){
   const a = arr.slice();
-  if (view.sortBy === 'addedDate') return a.sort((x,y)=> new Date(y.addedDate)-new Date(x.addedDate));
-  if (view.sortBy === 'lastLog') return a.sort((x,y)=> new Date(latestLogDate(y))-new Date(latestLogDate(x)));
+  if (view.sortBy === 'addedDate') return a.sort((x,y)=> {
+    if(!x.addedDate && !y.addedDate) return 0;
+    if(!x.addedDate) return 1;
+    if(!y.addedDate) return -1;
+    return new Date(y.addedDate)-new Date(x.addedDate);
+  });
+  if (view.sortBy === 'lastLog') return a.sort((x,y)=> new Date(latestLogDate(y)||0)-new Date(latestLogDate(x)||0));
   return a.sort((x,y)=>x.name.localeCompare(y.name,'ja'));
 }
 
@@ -139,7 +146,8 @@ function plantCard(p) {
   else html += '<div style="width:44px; height:44px; border-radius:10px; background:var(--bg-success); display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-plant" style="font-size:20px; color:var(--text-success);" aria-hidden="true"></i></div>';
   html += '<div style="flex:1; min-width:0;">';
   html += '<div style="display:flex; align-items:center; gap:6px;"><p style="font-weight:500; font-size:15px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+escapeHtml(p.name)+'</p></div>';
-  html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0;">'+escapeHtml(p.managementNumber)+' ・ '+escapeHtml(p.classification||'')+' ・ お迎えから'+daysSince(p.addedDate)+'日</p>';
+  const daysPart = p.addedDate ? (' ・ お迎えから'+daysSince(p.addedDate)+'日') : '';
+  html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0;">'+escapeHtml(p.managementNumber)+' ・ '+escapeHtml(p.classification||'')+daysPart+'</p>';
   if ((p.hashtags||[]).length) html += '<p style="margin:4px 0 0; display:flex; gap:4px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</p>';
   html += '</div><i class="ti ti-chevron-right" style="font-size:18px; color:var(--text-muted);" aria-hidden="true"></i></div>';
   return html;
@@ -346,8 +354,18 @@ function renderForm(editId) {
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">属</label>';
   html += selectWithAdd('f-genus', genusList, p?p.genus:'', '例: リプサリス属');
 
+  const hasDate = !!(p && p.addedDate);
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">お迎えした日</label>';
-  html += '<input id="f-date" type="date" value="'+(p?p.addedDate:new Date().toISOString().slice(0,10))+'" style="width:100%; margin-bottom:1rem;" />';
+  html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:1rem;">';
+  html += '<input id="f-date" type="date" value="'+(p?(p.addedDate||''):new Date().toISOString().slice(0,10))+'" style="flex:1;" '+((p && !p.addedDate)?'disabled':'')+' />';
+  html += '<label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-secondary); white-space:nowrap;"><input id="f-date-unset" type="checkbox" style="width:16px; height:16px; padding:0;" '+((p && !p.addedDate)?'checked':'')+' />未設定</label>';
+  html += '</div>';
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">購入場所(任意)</label>';
+  html += '<input id="f-place" type="text" placeholder="例: ○○園芸店、即売会など" value="'+(p?escapeHtml(p.purchaseLocation||''):'')+'" style="width:100%; margin-bottom:1rem;" />';
+
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">イベント情報(任意)</label>';
+  html += '<input id="f-event" type="text" placeholder="例: 多肉植物フェス2026で購入" value="'+(p?escapeHtml(p.eventInfo||''):'')+'" style="width:100%; margin-bottom:1rem;" />';
 
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">メモ</label>';
   html += '<textarea id="f-notes" rows="3" placeholder="置き場所や特徴など" style="width:100%; margin-bottom:8px; padding:8px; font-family:var(--font-sans); font-size:14px; border-radius:var(--radius); border:0.5px solid var(--border); background:var(--fill-field);">'+(p?escapeHtml(p.notes):'')+'</textarea>';
@@ -396,6 +414,10 @@ function bindFormEvents(editId) {
   bindPhotoPicker(pendingPhotos, '', refreshPhotoGrid);
   bindTagPickerEvents();
 
+  const dateInput = document.getElementById('f-date');
+  const unsetCheckbox = document.getElementById('f-date-unset');
+  unsetCheckbox.onchange = () => { dateInput.disabled = unsetCheckbox.checked; };
+
   document.getElementById('save-btn').onclick = async () => {
     const errEl = document.getElementById('f-error');
     const name = document.getElementById('f-name').value.trim();
@@ -407,18 +429,21 @@ function bindFormEvents(editId) {
     errEl.style.display = 'none';
     if (!classList.includes(classification)) { classList.push(classification); await saveClassList(); }
     if (!genusList.includes(genus)) { genusList.push(genus); await saveGenusList(); }
-    const date = document.getElementById('f-date').value;
+    const date = unsetCheckbox.checked ? null : (dateInput.value || null);
     const notes = document.getElementById('f-notes').value.trim();
+    const purchaseLocation = document.getElementById('f-place').value.trim();
+    const eventInfo = document.getElementById('f-event').value.trim();
     const finalTags = window.__formTags.slice();
     if (editId) {
       const p = plants.find(x=>x.id===editId);
       p.name=name; p.classification=classification; p.genus=genus; p.addedDate=date; p.notes=notes;
+      p.purchaseLocation=purchaseLocation; p.eventInfo=eventInfo;
       p.hashtags = finalTags; p.photos = pendingPhotos.slice();
       await savePlants();
       view = { screen:'detail', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy };
     } else {
       const managementNumber = genManagementNumber(classification, genus);
-      const newPlant = { id: uid(), name, classification, genus, managementNumber, addedDate: date, notes, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [] };
+      const newPlant = { id: uid(), name, classification, genus, managementNumber, addedDate: date, notes, purchaseLocation, eventInfo, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [] };
       plants.push(newPlant);
       await savePlants();
       view = { screen:'detail', plantId: newPlant.id, mode: view.mode, query: view.query, sortBy: view.sortBy };
@@ -447,8 +472,11 @@ function renderDetail(id) {
   html += '<div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:12px; padding:1rem 1.25rem; margin-bottom:1rem;">';
   html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">管理番号 <span style="color:var(--text-primary); font-weight:500;">'+escapeHtml(p.managementNumber)+'</span></p>';
   html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">分類: '+escapeHtml(p.classification)+' ・ 属: '+escapeHtml(p.genus)+'</p>';
-  html += '<p style="margin:0 0 8px; font-size:13px; color:var(--text-muted);">お迎え日 '+fmtDate(p.addedDate)+'(お迎えから'+daysSince(p.addedDate)+'日)</p>';
-  if (p.notes) html += '<div style="border-top:0.5px solid var(--border); padding-top:8px; font-size:13px; color:var(--text-secondary); line-height:1.6;">'+escapeHtml(p.notes)+'</div>';
+  const dayInfo = p.addedDate ? '(お迎えから'+daysSince(p.addedDate)+'日)' : '';
+  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">お迎え日 '+fmtDate(p.addedDate)+dayInfo+'</p>';
+  if (p.purchaseLocation) html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">購入場所: '+escapeHtml(p.purchaseLocation)+'</p>';
+  if (p.eventInfo) html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">イベント: '+escapeHtml(p.eventInfo)+'</p>';
+  if (p.notes) html += '<div style="border-top:0.5px solid var(--border); padding-top:8px; margin-top:4px; font-size:13px; color:var(--text-secondary); line-height:1.6;">'+escapeHtml(p.notes)+'</div>';
   if ((p.hashtags||[]).length) html += '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</div>';
   html += '</div>';
 
