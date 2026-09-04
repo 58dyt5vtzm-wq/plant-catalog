@@ -56,8 +56,8 @@
 
 <script>
 let plants = [];
-let classList = ['サボテン科','ベンケイソウ科','トウダイグサ科','キョウチクトウ科'];
-let genusList = ['アストロフィツム属','ハウォルチア属','ユーフォルビア属','エケベリア属'];
+let classList = [];
+let genusList = [];
 let view = { screen: 'list', plantId: null, mode: 'all', query: '', sortBy: 'name' };
 let pendingPhotos = [];
 let pendingLogPhotos = [];
@@ -74,6 +74,9 @@ async function loadAll() {
   try { const r = await storage.get('plants-data'); plants = r ? JSON.parse(r.value) : []; } catch(e) { plants = []; }
   try { const r = await storage.get('class-list'); if (r) classList = JSON.parse(r.value); } catch(e) {}
   try { const r = await storage.get('genus-list'); if (r) genusList = JSON.parse(r.value); } catch(e) {}
+  rebuildListsFromPlants();
+  renumberAll();
+  await savePlants(); await saveClassList(); await saveGenusList();
   render();
 }
 async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} }
@@ -86,17 +89,46 @@ function daysSince(iso){ return Math.floor((Date.now()-new Date(iso).getTime())/
 function pad(n,len){ return String(n).padStart(len,'0'); }
 function escapeHtml(str){ const d=document.createElement('div'); d.textContent=str||''; return d.innerHTML; }
 function latestLogDate(p){ const logs=p.logs||[]; if(!logs.length) return p.addedDate||''; return logs.reduce((m,l)=> l.date>m?l.date:m, logs[0].date); }
+function purchaseLineText(p){
+  const parts = [];
+  if (p.addedDate) parts.push('from '+fmtDate(p.addedDate));
+  if (p.purchaseLocation) parts.push(p.purchaseLocation);
+  return parts.join(' ');
+}
+function titleLineText(p){ return [p.classification, p.genus, p.name].filter(Boolean).join(' ・ '); }
 
 function hashHue(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h*31+str.charCodeAt(i))%360; } return h; }
 function tagColor(t){ const hue=hashHue(t); return { bg:'hsl('+hue+', 65%, 93%)', fg:'hsl('+hue+', 55%, 32%)' }; }
 function tagChipHtml(t, extra){ const c=tagColor(t); return '<span '+(extra||'')+' style="font-size:12px; background:'+c.bg+'; color:'+c.fg+'; padding:3px 8px; border-radius:var(--radius); display:inline-block;">#'+escapeHtml(t)+'</span>'; }
 
+function formatManagementNumber(ci, gi, seq){ return pad(ci+1,2)+'-'+pad(gi+1,2)+'-'+pad(seq,3); }
 function genManagementNumber(classification, genus){
   let ci=classList.indexOf(classification); if(ci<0) ci=classList.length;
   let gi=genusList.indexOf(genus); if(gi<0) gi=genusList.length;
   const seq=plants.filter(p=>p.classification===classification && p.genus===genus).length+1;
-  return pad(ci+1,2)+'-'+pad(gi+1,2)+'-'+pad(seq,3);
+  return formatManagementNumber(ci, gi, seq);
 }
+function rebuildListsFromPlants(){
+  if (classList.length === 0) {
+    const seen = []; plants.forEach(p => { if (p.classification && !seen.includes(p.classification)) seen.push(p.classification); });
+    classList = seen;
+  }
+  if (genusList.length === 0) {
+    const seen = []; plants.forEach(p => { if (p.genus && !seen.includes(p.genus)) seen.push(p.genus); });
+    genusList = seen;
+  }
+}
+function renumberAll(){
+  const counts = {};
+  plants.forEach(p => {
+    const key = p.classification+'|'+p.genus;
+    counts[key] = (counts[key]||0)+1;
+    const ci = classList.indexOf(p.classification);
+    const gi = genusList.indexOf(p.genus);
+    p.managementNumber = formatManagementNumber(ci<0?classList.length:ci, gi<0?genusList.length:gi, counts[key]);
+  });
+}
+
 function allTags(){ const s=new Set(); plants.forEach(p=>(p.hashtags||[]).forEach(t=>s.add(t))); return Array.from(s); }
 function usedClassifications(){ const s=new Set(); plants.forEach(p=>{ if(p.classification) s.add(p.classification); }); return Array.from(s); }
 function matchesQuery(p,q){
@@ -145,9 +177,9 @@ function plantCard(p) {
   if (thumb) html += '<img src="'+thumb+'" style="width:44px; height:44px; border-radius:10px; object-fit:cover; flex-shrink:0;" />';
   else html += '<div style="width:44px; height:44px; border-radius:10px; background:var(--bg-success); display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-plant" style="font-size:20px; color:var(--text-success);" aria-hidden="true"></i></div>';
   html += '<div style="flex:1; min-width:0;">';
-  html += '<div style="display:flex; align-items:center; gap:6px;"><p style="font-weight:500; font-size:15px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+escapeHtml(p.name)+'</p></div>';
-  const daysPart = p.addedDate ? (' ・ お迎えから'+daysSince(p.addedDate)+'日') : '';
-  html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0;">'+escapeHtml(p.managementNumber)+' ・ '+escapeHtml(p.classification||'')+daysPart+'</p>';
+  html += '<p style="font-weight:500; font-size:15px; margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+escapeHtml(titleLineText(p))+'</p>';
+  const purchaseLine = purchaseLineText(p);
+  html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+escapeHtml(p.managementNumber)+(purchaseLine?(' ・ '+escapeHtml(purchaseLine)):'')+'</p>';
   if ((p.hashtags||[]).length) html += '<p style="margin:4px 0 0; display:flex; gap:4px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</p>';
   html += '</div><i class="ti ti-chevron-right" style="font-size:18px; color:var(--text-muted);" aria-hidden="true"></i></div>';
   return html;
@@ -345,17 +377,17 @@ function renderForm(editId) {
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">写真</label>';
   html += renderPhotoPicker(pendingPhotos, '');
 
-  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin:1rem 0 6px;">名前</label>';
-  html += '<input id="f-name" type="text" placeholder="例: 兜(アストロフィツム)" value="'+(p?escapeHtml(p.name):'')+'" style="width:100%; margin-bottom:1rem;" />';
-
-  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">分類(科)</label>';
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin:1rem 0 6px;">分類(科)</label>';
   html += selectWithAdd('f-class', classList, p?p.classification:'', '例: リプサリス科');
 
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">属</label>';
   html += selectWithAdd('f-genus', genusList, p?p.genus:'', '例: リプサリス属');
 
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">名前</label>';
+  html += '<input id="f-name" type="text" placeholder="例: 兜" value="'+(p?escapeHtml(p.name):'')+'" style="width:100%; margin-bottom:1rem;" />';
+
   const hasDate = !!(p && p.addedDate);
-  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">お迎えした日</label>';
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">入手日</label>';
   html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:1rem;">';
   html += '<input id="f-date" type="date" value="'+(p?(p.addedDate||''):new Date().toISOString().slice(0,10))+'" style="flex:1;" '+((p && !p.addedDate)?'disabled':'')+' />';
   html += '<label style="display:flex; align-items:center; gap:4px; font-size:12px; color:var(--text-secondary); white-space:nowrap;"><input id="f-date-unset" type="checkbox" style="width:16px; height:16px; padding:0;" '+((p && !p.addedDate)?'checked':'')+' />未設定</label>';
@@ -436,9 +468,11 @@ function bindFormEvents(editId) {
     const finalTags = window.__formTags.slice();
     if (editId) {
       const p = plants.find(x=>x.id===editId);
+      const classOrGenusChanged = p.classification!==classification || p.genus!==genus;
       p.name=name; p.classification=classification; p.genus=genus; p.addedDate=date; p.notes=notes;
       p.purchaseLocation=purchaseLocation; p.eventInfo=eventInfo;
       p.hashtags = finalTags; p.photos = pendingPhotos.slice();
+      if (classOrGenusChanged) renumberAll();
       await savePlants();
       view = { screen:'detail', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy };
     } else {
@@ -470,11 +504,11 @@ function renderDetail(id) {
   }
 
   html += '<div style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:12px; padding:1rem 1.25rem; margin-bottom:1rem;">';
-  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">管理番号 <span style="color:var(--text-primary); font-weight:500;">'+escapeHtml(p.managementNumber)+'</span></p>';
-  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">分類: '+escapeHtml(p.classification)+' ・ 属: '+escapeHtml(p.genus)+'</p>';
+  html += '<p style="margin:0 0 6px; font-size:14px; font-weight:500;">'+escapeHtml(titleLineText(p))+'</p>';
+  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-secondary);">管理番号 '+escapeHtml(p.managementNumber)+'</p>';
+  const purchaseLine = purchaseLineText(p);
   const dayInfo = p.addedDate ? '(お迎えから'+daysSince(p.addedDate)+'日)' : '';
-  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">お迎え日 '+fmtDate(p.addedDate)+dayInfo+'</p>';
-  if (p.purchaseLocation) html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">購入場所: '+escapeHtml(p.purchaseLocation)+'</p>';
+  html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">'+(purchaseLine?escapeHtml(purchaseLine):'入手日・購入場所 未設定')+dayInfo+'</p>';
   if (p.eventInfo) html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted);">イベント: '+escapeHtml(p.eventInfo)+'</p>';
   if (p.notes) html += '<div style="border-top:0.5px solid var(--border); padding-top:8px; margin-top:4px; font-size:13px; color:var(--text-secondary); line-height:1.6;">'+escapeHtml(p.notes)+'</div>';
   if ((p.hashtags||[]).length) html += '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</div>';
@@ -533,7 +567,7 @@ function bindDetailEvents() {
   document.getElementById('back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('edit-btn').onclick = () => { view = { screen:'edit', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('del-btn').onclick = async () => {
-    plants = plants.filter(x=>x.id!==p.id); await savePlants();
+    plants = plants.filter(x=>x.id!==p.id); renumberAll(); await savePlants();
     view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render();
   };
   document.getElementById('log-add-btn').onclick = () => { pendingLogPhotos=[]; view = { screen:'logAdd', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
