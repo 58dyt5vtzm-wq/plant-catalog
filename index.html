@@ -73,9 +73,8 @@ const storage = {
 
 async function loadAll() {
   try { const r = await storage.get('plants-data'); plants = r ? JSON.parse(r.value) : []; } catch(e) { plants = []; }
-  // 管理番号リセット: 分類・属リストを空にしてから登録済み植物の登場順で振り直す
-  classList = [];
-  genusList = [];
+  try { const r = await storage.get('class-list'); if (r) classList = JSON.parse(r.value); } catch(e) {}
+  try { const r = await storage.get('genus-list'); if (r) genusList = JSON.parse(r.value); } catch(e) {}
   rebuildListsFromPlants();
   renumberAll();
   await savePlants(); await saveClassList(); await saveGenusList();
@@ -99,6 +98,8 @@ function purchaseLineText(p){
 }
 function titleLineText(p){ return [p.classification, p.genus, p.name].filter(Boolean).join(' '); }
 function classGenusText(p){ return [p.classification, p.genus].filter(Boolean).join(' '); }
+function plantById(id){ return plants.find(x=>x.id===id); }
+function childrenOf(id){ return plants.filter(p=>p.parentId===id); }
 
 function hashHue(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h*31+str.charCodeAt(i))%360; } return h; }
 function tagColor(t){ const hue=hashHue(t); return { bg:'hsl('+hue+', 65%, 93%)', fg:'hsl('+hue+', 55%, 32%)' }; }
@@ -407,6 +408,12 @@ function stopScan() {
   if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
 }
 
+function findPlantFromScanText(text) {
+  const idMatch = text.match(/ID:([A-Za-z0-9]+)/);
+  if (idMatch) { const found = plants.find(p => p.id === idMatch[1]); if (found) return found; }
+  return plants.find(p => text.includes(p.managementNumber)) || null;
+}
+
 async function bindScanEvents() {
   document.getElementById('back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   const video = document.getElementById('scan-video');
@@ -424,15 +431,14 @@ async function bindScanEvents() {
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(imgData.data, imgData.width, imgData.height);
         if (code && code.data) {
-          const text = code.data;
-          const found = plants.find(p => text.includes(p.managementNumber));
+          const found = findPlantFromScanText(code.data);
           if (found) {
             stopScan();
             view = { screen:'detail', plantId: found.id, mode:view.mode, query:view.query, sortBy:view.sortBy };
             render();
             return;
           } else {
-            statusEl.textContent = '一致する植物が見つかりません';
+            statusEl.textContent = '一致する植物が見つかりません(古いラベルの場合は再印刷をお試しください)';
           }
         }
       }
@@ -523,6 +529,13 @@ function renderForm(editId) {
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">名前</label>';
   html += '<input id="f-name" type="text" placeholder="例: 兜" value="'+(p?escapeHtml(p.name):'')+'" style="width:100%; margin-bottom:1rem;" />';
 
+  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">親株(株分け・挿し木の場合、任意)</label>';
+  html += '<select id="f-parent" style="width:100%; margin-bottom:1rem;"><option value="">なし</option>';
+  plants.filter(x => x.id !== editId).forEach(x => {
+    html += '<option value="'+x.id+'" '+((p && p.parentId===x.id)?'selected':'')+'>['+escapeHtml(x.managementNumber)+'] '+escapeHtml(titleLineText(x))+'</option>';
+  });
+  html += '</select>';
+
   const hasDate = !!(p && p.addedDate);
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">入手日</label>';
   html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:1rem;">';
@@ -606,19 +619,20 @@ function bindFormEvents(editId) {
     const notes = document.getElementById('f-notes').value.trim();
     const purchaseLocation = document.getElementById('f-place').value.trim();
     const eventInfo = document.getElementById('f-event').value.trim();
+    const parentId = document.getElementById('f-parent').value || null;
     const finalTags = window.__formTags.slice();
     if (editId) {
       const p = plants.find(x=>x.id===editId);
       const classOrGenusChanged = p.classification!==classification || p.genus!==genus;
       p.name=name; p.classification=classification; p.genus=genus; p.addedDate=date; p.notes=notes;
-      p.purchaseLocation=purchaseLocation; p.eventInfo=eventInfo;
+      p.purchaseLocation=purchaseLocation; p.eventInfo=eventInfo; p.parentId=parentId;
       p.hashtags = finalTags; p.photos = pendingPhotos.slice();
       if (classOrGenusChanged) renumberAll();
       await savePlants();
       view = { screen:'detail', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy };
     } else {
       const managementNumber = genManagementNumber(classification, genus);
-      const newPlant = { id: uid(), name, classification, genus, managementNumber, addedDate: date, notes, purchaseLocation, eventInfo, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [] };
+      const newPlant = { id: uid(), name, classification, genus, managementNumber, addedDate: date, notes, purchaseLocation, eventInfo, parentId, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [] };
       plants.push(newPlant);
       await savePlants();
       view = { screen:'detail', plantId: newPlant.id, mode: view.mode, query: view.query, sortBy: view.sortBy };
@@ -651,9 +665,23 @@ function renderDetail(id) {
   const dayInfo = p.addedDate ? '(お迎えから'+daysSince(p.addedDate)+'日)' : '';
   html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted); overflow-wrap:break-word;">'+(purchaseLine?escapeHtml(purchaseLine):'入手日・購入場所 未設定')+dayInfo+'</p>';
   if (p.eventInfo) html += '<p style="margin:0 0 4px; font-size:13px; color:var(--text-muted); overflow-wrap:break-word;">イベント: '+escapeHtml(p.eventInfo)+'</p>';
+  const parentPlant = p.parentId ? plantById(p.parentId) : null;
+  if (parentPlant) html += '<p class="parent-link" data-id="'+parentPlant.id+'" style="margin:0 0 4px; font-size:13px; color:var(--text-accent); cursor:pointer; overflow-wrap:break-word;"><i class="ti ti-arrow-up-right" style="font-size:12px;" aria-hidden="true"></i> 親株: ['+escapeHtml(parentPlant.managementNumber)+'] '+escapeHtml(titleLineText(parentPlant))+'</p>';
   if (p.notes) html += '<div style="border-top:0.5px solid var(--border); padding-top:8px; margin-top:4px; font-size:13px; color:var(--text-secondary); line-height:1.6; overflow-wrap:break-word;">'+escapeHtml(p.notes)+'</div>';
   if ((p.hashtags||[]).length) html += '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">'+p.hashtags.map(t=>tagChipHtml(t)).join('')+'</div>';
   html += '</div>';
+
+  const children = childrenOf(p.id);
+  if (children.length > 0) {
+    html += '<p style="margin:0 0 8px; font-size:14px; font-weight:500;">子株・株分け('+children.length+')</p>';
+    html += '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:1.25rem;">';
+    children.forEach(c => {
+      html += '<div class="child-link" data-id="'+c.id+'" style="background:var(--surface-2); border:0.5px solid var(--border); border-radius:var(--radius); padding:10px 12px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px;">';
+      html += '<p style="margin:0; font-size:13px; font-weight:500; overflow-wrap:break-word;">['+escapeHtml(c.managementNumber)+'] '+escapeHtml(titleLineText(c))+'</p>';
+      html += '<i class="ti ti-chevron-right" style="font-size:16px; color:var(--text-muted); flex-shrink:0;" aria-hidden="true"></i></div>';
+    });
+    html += '</div>';
+  }
 
   html += '<div id="qr-holder" style="display:flex; flex-direction:column; align-items:center; gap:10px; background:var(--surface-1); border-radius:12px; padding:1rem; margin-bottom:1rem;">';
   html += '<div id="qr-code"></div>';
@@ -662,7 +690,7 @@ function renderDetail(id) {
   html += '<button id="label-download-btn" style="flex:1; height:34px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px;"><i class="ti ti-download" style="font-size:15px;" aria-hidden="true"></i>ラベル画像</button>';
   html += '<button id="label-print-btn" style="flex:1; height:34px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px;"><i class="ti ti-printer" style="font-size:15px;" aria-hidden="true"></i>印刷</button>';
   html += '</div>';
-  html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">ラベル画像はピータッチ キューブアプリに読み込んで印刷できます</p>';
+  html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">印刷は12mm幅のピータッチテープに合わせたサイズです</p>';
   html += '</div>';
   html += '<div id="label-print-area" style="display:none;"></div>';
 
@@ -708,12 +736,17 @@ function bindDetailEvents() {
   document.getElementById('back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('edit-btn').onclick = () => { view = { screen:'edit', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('del-btn').onclick = async () => {
-    plants = plants.filter(x=>x.id!==p.id); renumberAll(); await savePlants();
+    plants = plants.filter(x=>x.id!==p.id);
+    plants.forEach(x => { if (x.parentId === p.id) x.parentId = null; });
+    renumberAll(); await savePlants();
     view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render();
   };
   document.getElementById('log-add-btn').onclick = () => { pendingLogPhotos=[]; view = { screen:'logAdd', plantId:p.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  const parentLink = document.querySelector('.parent-link');
+  if (parentLink) parentLink.onclick = () => { view = { screen:'detail', plantId: parentLink.dataset.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  document.querySelectorAll('.child-link').forEach(el => { el.onclick = () => { view = { screen:'detail', plantId: el.dataset.id, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); }; });
 
-  new QRCode(document.getElementById('qr-code'), { text: p.managementNumber+' '+p.name, width: 120, height: 120 });
+  new QRCode(document.getElementById('qr-code'), { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: 120, height: 120 });
 
   function wrapLines(ctx, text, maxWidth) {
     const lines = []; let cur = '';
@@ -789,13 +822,12 @@ function bindDetailEvents() {
     const qrImg = document.querySelector('#qr-code img, #qr-code canvas');
     const src = qrImg.tagName === 'IMG' ? qrImg.src : qrImg.toDataURL();
     const area = document.getElementById('label-print-area');
-    const pLine = purchaseLineText(p);
-    area.innerHTML = '<style>@media print { body * { visibility: hidden; } #print-label, #print-label * { visibility: visible; } #print-label { position: absolute; top:0; left:0; width:70mm; min-height:24mm; display:flex; align-items:flex-start; gap:4mm; padding:2mm; box-sizing:border-box; } #print-label .txt { max-width:44mm; } }</style>' +
-      '<div id="print-label"><img src="'+src+'" style="width:18mm; height:18mm; flex-shrink:0;" /><div class="txt" style="font-family:sans-serif; overflow-wrap:break-word;">' +
-      '<div style="font-size:8px; color:#333;">'+escapeHtml(classGenusText(p))+'</div>' +
-      '<div style="font-size:10px; font-weight:bold;">'+escapeHtml(p.name)+'</div>' +
-      '<div style="font-size:8px;">'+escapeHtml(p.managementNumber)+'</div>' +
-      (pLine ? '<div style="font-size:7px;">'+escapeHtml(pLine)+'</div>' : '') +
+    area.innerHTML = '<style>@media print { body * { visibility: hidden; } #print-label, #print-label * { visibility: visible; } ' +
+      '#print-label { position: absolute; top:0; left:0; height:12mm; width:auto; display:flex; align-items:center; gap:1.5mm; padding:0.5mm 1mm; box-sizing:border-box; white-space:nowrap; } ' +
+      '#print-label .txt { display:flex; flex-direction:column; justify-content:center; white-space:nowrap; } }</style>' +
+      '<div id="print-label"><img src="'+src+'" style="height:10mm; width:10mm; flex-shrink:0;" /><div class="txt" style="font-family:sans-serif;">' +
+      '<div style="font-size:7pt; font-weight:bold; line-height:1.1;">'+escapeHtml(p.name)+'</div>' +
+      '<div style="font-size:5pt; color:#333; line-height:1.1;">'+escapeHtml(p.managementNumber)+'</div>' +
       '</div></div>';
     window.print();
   };
