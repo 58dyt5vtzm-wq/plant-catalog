@@ -977,7 +977,7 @@ function renderDetail(id) {
       html += '</div>';
     }
     html += '<button class="app-btn" id="label-download-btn" style="width:100%; height:38px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px; background:var(--fill-primary); color:var(--on-primary); border:none;"><i class="ti ti-download" style="font-size:15px;" aria-hidden="true"></i>ラベル画像</button>';
-    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">12mm幅テープに、分類属・名前+管理番号・購入情報の3行で印刷できます</p>';
+    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、透明背景・白文字・中央揃えで科属・種名(または和名)+管理番号の2行を印刷できます</p>';
     html += '</div>';
   }
   html += '</div>';
@@ -1081,66 +1081,71 @@ function bindDetailEvents() {
 
   new QRCode(document.getElementById('qr-code'), { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: 120, height: 120 });
 
-  function wrapLines(ctx, text, maxWidth) {
-    const lines = []; let cur = '';
-    for (const ch of text) {
-      const test = cur + ch;
-      if (ctx.measureText(test).width > maxWidth && cur) { lines.push(cur); cur = ch; } else { cur = test; }
-    }
-    if (cur) lines.push(cur);
-    return lines.length ? lines : [''];
-  }
-
   document.getElementById('label-download-btn').onclick = () => {
-    const qrImg = document.querySelector('#qr-code img, #qr-code canvas');
-    const scale = 10;
-    const qrSize = 10*scale;
-    const padX = 1*scale;
-    const gap = 1.5*scale;
-    const textX = padX + qrSize + gap;
-    const textMaxWidth = 44*scale;
-
-    const measureCanvas = document.createElement('canvas');
-    const mctx = measureCanvas.getContext('2d');
-    const cgFont = '400 17px sans-serif', cgLH = 20;
-    const nameLineFont = '700 24px sans-serif', nameLineLH = 28;
-    const plFont = '400 16px sans-serif', plLH = 19;
-
-    mctx.font = cgFont; const cgLines = classGenusText(p) ? wrapLines(mctx, classGenusText(p), textMaxWidth) : [];
-    mctx.font = nameLineFont;
-    const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
-    const nameLines = wrapLines(mctx, nameMnCombined, textMaxWidth);
-    const pLineText = purchaseLineText(p);
-    mctx.font = plFont; const plLines = pLineText ? wrapLines(mctx, pLineText, textMaxWidth) : [];
-
-    const blocks = [];
-    if (cgLines.length) blocks.push({ lines: cgLines, font: cgFont, lh: cgLH, color: '#6b6a66' });
-    blocks.push({ lines: nameLines, font: nameLineFont, lh: nameLineLH, color: '#000000' });
-    if (plLines.length) blocks.push({ lines: plLines, font: plFont, lh: plLH, color: '#777777' });
-
-    const minBlockHeights = blocks.map(b => b.lines.length*b.lh + 10);
-    const minTotal = minBlockHeights.reduce((a,b)=>a+b,0);
-
-    const canvasWidth = padX + qrSize + gap + textMaxWidth + padX;
-    const canvasHeight = Math.max(qrSize + padX*2, minTotal + padX*2);
+    const scale = 10; // px per mm
+    const totalWidthMm = 50;
+    const totalHeightMm = 12;
+    const qrSizeMm = 10;
+    const padMm = 2;
+    const gapMm = 2;
 
     const canvas = document.createElement('canvas');
-    canvas.width = Math.round(canvasWidth); canvas.height = Math.round(canvasHeight);
+    canvas.width = totalWidthMm * scale;
+    canvas.height = totalHeightMm * scale;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+
+    const qrSize = qrSizeMm * scale;
+    const padX = padMm * scale;
+    const gap = gapMm * scale;
+    const textAreaStart = padX + qrSize + gap;
+    const textAreaWidth = canvas.width - textAreaStart - padX;
+    const textCenterX = textAreaStart + textAreaWidth / 2;
+
+    function truncateToFit(text, maxWidth) {
+      if (!text) return '';
+      if (ctx.measureText(text).width <= maxWidth) return text;
+      let t = text;
+      while (t.length > 1 && ctx.measureText(t + '…').width > maxWidth) t = t.slice(0, -1);
+      return t + '…';
+    }
+
+    const labelFont = '400 24px sans-serif';
+    ctx.font = labelFont;
+    const cgText = truncateToFit(classGenusText(p), textAreaWidth);
+    const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
+    const nameText = truncateToFit(nameMnCombined, textAreaWidth);
+
+    // Generate a separate white-on-transparent QR code for the printed label
+    const qrTemp = document.createElement('div');
+    qrTemp.style.position = 'fixed';
+    qrTemp.style.left = '-9999px';
+    document.body.appendChild(qrTemp);
+    new QRCode(qrTemp, { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: qrSize, height: qrSize, colorDark: '#ffffff', colorLight: 'rgba(0,0,0,0)' });
 
     const draw = () => {
+      const qrImg = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
       ctx.drawImage(qrImg, padX, (canvas.height-qrSize)/2, qrSize, qrSize);
-      const segH = canvas.height / blocks.length;
-      blocks.forEach((b, i) => {
-        const blockTextHeight = b.lines.length * b.lh;
-        let y = segH*i + (segH - blockTextHeight)/2 + b.lh*0.72;
-        ctx.font = b.font; ctx.fillStyle = b.color;
-        b.lines.forEach(line => { ctx.fillText(line, textX, y); y += b.lh; });
-      });
+
+      // Pull the two lines close together and center the block vertically
+      const lineHeight = 27; // tight line spacing
+      const lineGap = 3;
+      const blockHeight = lineHeight * 2 + lineGap;
+      const blockStartY = (canvas.height - blockHeight) / 2 + lineHeight / 2;
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = labelFont;
+      ctx.fillText(cgText, textCenterX, blockStartY);
+      ctx.fillText(nameText, textCenterX, blockStartY + lineHeight + lineGap);
+
+      document.body.removeChild(qrTemp);
       canvas.toBlob((blob) => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'label_'+p.managementNumber+'.png'; a.click(); URL.revokeObjectURL(url); });
     };
-    if (qrImg.tagName === 'IMG' && !qrImg.complete) { qrImg.onload = draw; } else { draw(); }
+    const qrImgCheck = qrTemp.querySelector('img');
+    if (qrImgCheck && !qrImgCheck.complete) { qrImgCheck.onload = draw; } else { setTimeout(draw, 30); }
   };
 }
 
