@@ -76,6 +76,9 @@ let logsExpanded = false;
 let tagHistoryExpanded = false;
 let expandedGroups = new Set();
 let tagAddOpenFor = null;
+let taxonomyEditing = null;
+let taxonomyEditError = null;
+let taxonomyDeleteConfirm = null;
 
 // --- storage: uses localStorage so data persists in this browser ---
 const storage = {
@@ -120,6 +123,8 @@ function usedPurchaseLocations(){ const s=new Set(); plants.forEach(p=>{ if(p.pu
 function usedEventInfos(){ const s=new Set(); plants.forEach(p=>{ if(p.eventInfo) s.add(p.eventInfo); }); return Array.from(s); }
 function usedSpeciesNames(){ const s=new Set(); plants.forEach(p=>{ if(p.name) s.add(p.name); }); return Array.from(s); }
 function usedCommonNames(){ const s=new Set(); plants.forEach(p=>{ if(p.commonName) s.add(p.commonName); }); return Array.from(s); }
+function classificationUsageCount(name){ return plants.filter(p=>p.classification===name).length; }
+function genusUsageCount(name){ return plants.filter(p=>p.genus===name).length; }
 
 function eventsForMonth(year, month){
   const results = [];
@@ -230,6 +235,7 @@ function render() {
   else if (view.screen === 'logAdd') { app.innerHTML = renderLogForm(view.plantId); bindLogEvents(); }
   else if (view.screen === 'scan') { app.innerHTML = renderScan(); bindScanEvents(); }
   else if (view.screen === 'calendar') { app.innerHTML = renderCalendar(); bindCalendarEvents(); }
+  else if (view.screen === 'taxonomy') { app.innerHTML = renderTaxonomyManage(); bindTaxonomyEvents(); }
 }
 
 function pillBtn(key, label, active) {
@@ -278,6 +284,7 @@ function renderList() {
   html += '<div style="display:flex; gap:6px;">';
   html += '<button class="app-btn" id="cal-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-calendar" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<button class="app-btn" id="scan-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-qrcode" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<button class="app-btn" id="taxonomy-manage-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-settings" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<button class="app-btn" id="add-btn" style="display:flex; align-items:center; gap:6px; padding:0 14px; height:36px; background:var(--fill-primary); color:var(--on-primary); border:none;"><i class="ti ti-plus" style="font-size:18px;" aria-hidden="true"></i>追加</button>';
   html += '</div></div>';
 
@@ -329,6 +336,7 @@ function renderList() {
     });
     if (!any) html += emptyState('該当する植物がありません');
   }
+
   return html;
 }
 
@@ -336,12 +344,121 @@ function bindListEvents() {
   document.getElementById('add-btn').onclick = () => { pendingPhotos=[]; view = { screen:'add', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('scan-btn').onclick = () => { view = { screen:'scan', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('cal-btn').onclick = () => { cal.selected = null; calJumpOpen=false; view = { screen:'calendar', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  document.getElementById('taxonomy-manage-btn').onclick = () => { view = { screen:'taxonomy', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   const searchInput = document.getElementById('search-input');
   searchInput.oninput = () => { view.query = searchInput.value; render(); const si=document.getElementById('search-input'); si.focus(); si.setSelectionRange(view.query.length, view.query.length); };
   document.getElementById('sort-select').onchange = (e) => { view.sortBy = e.target.value; render(); };
   document.querySelectorAll('.mode-btn').forEach(b => { b.onclick = () => { view.mode = b.dataset.key; expandedGroups = new Set(); render(); }; });
   document.querySelectorAll('.group-toggle').forEach(b => { b.onclick = () => { const k = b.dataset.key; if (expandedGroups.has(k)) expandedGroups.delete(k); else expandedGroups.add(k); render(); }; });
   document.querySelectorAll('.plant-card').forEach(el => { el.onclick = () => { view = { screen:'detail', plantId: el.dataset.id, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); }; });
+}
+
+function renderTaxonomyManage() {
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
+  html += '<button class="app-btn" id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:19px; font-weight:600;">科・属の管理</h3></div>';
+  html += '<p style="font-size:12px; color:var(--text-muted); margin:0 0 1.25rem; line-height:1.6;">誤字などは「編集」で直せます(同じ番号のまま名前だけ変わります)。削除は使われていない項目のみ可能です。</p>';
+
+  function rowsHtml(list, kind, usageFn) {
+    let h = '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:1.5rem;">';
+    const items = list.map((name,i)=>({name,i})).filter(x=>x.name);
+    const sorted = sortJa(items.map(x=>x.name)).map(name => items.find(x=>x.name===name));
+    if (sorted.length === 0) h += '<p style="font-size:13px; color:var(--text-muted); text-align:center; padding:1rem 0;">登録がありません</p>';
+    sorted.forEach(({name,i}) => {
+      const count = usageFn(name);
+      const isEditing = taxonomyEditing && taxonomyEditing.kind === kind && taxonomyEditing.i === i;
+      const isConfirmingDelete = taxonomyDeleteConfirm && taxonomyDeleteConfirm.kind === kind && taxonomyDeleteConfirm.i === i;
+      h += '<div class="app-card" style="background:var(--surface-2); border:0.5px solid var(--border); padding:10px 12px;">';
+      if (isEditing) {
+        h += '<div style="display:flex; align-items:center; gap:8px;">';
+        h += '<input class="taxonomy-edit-input app-input" data-kind="'+kind+'" data-i="'+i+'" type="text" value="'+escapeHtml(name)+'" style="flex:1;" />';
+        h += '<button class="app-btn taxonomy-edit-save" data-kind="'+kind+'" data-i="'+i+'" style="height:32px; padding:0 10px; font-size:12px; flex-shrink:0;">保存</button>';
+        h += '<button class="app-btn taxonomy-edit-cancel" style="height:32px; padding:0 10px; font-size:12px; flex-shrink:0;">取消</button>';
+        h += '</div>';
+        if (taxonomyEditError && taxonomyEditError.kind===kind && taxonomyEditError.i===i) {
+          h += '<p style="margin:6px 0 0; font-size:12px; color:var(--text-danger);">'+escapeHtml(taxonomyEditError.message)+'</p>';
+        }
+      } else if (isConfirmingDelete) {
+        h += '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">';
+        h += '<span style="font-size:12px; color:var(--text-danger); flex:1;">「'+escapeHtml(name)+'」を削除しますか?</span>';
+        h += '<button class="app-btn taxonomy-delete-confirm" data-kind="'+kind+'" data-i="'+i+'" style="height:30px; padding:0 12px; font-size:12px; background:var(--fill-danger); color:var(--on-danger); border:none; flex-shrink:0;">削除する</button>';
+        h += '<button class="app-btn taxonomy-delete-cancel" style="height:30px; padding:0 12px; font-size:12px; flex-shrink:0;">キャンセル</button>';
+        h += '</div>';
+      } else {
+        h += '<div style="display:flex; align-items:center; gap:8px;">';
+        h += '<span style="font-size:13px; overflow-wrap:break-word; flex:1;">'+escapeHtml(name)+'</span>';
+        if (count > 0) h += '<span style="font-size:11px; color:var(--text-muted); flex-shrink:0;">使用中('+count+')</span>';
+        h += '<button class="app-btn taxonomy-edit-btn" data-kind="'+kind+'" data-i="'+i+'" style="height:26px; padding:0 10px; font-size:12px; flex-shrink:0;">編集</button>';
+        if (count === 0) h += '<button class="app-btn taxonomy-delete-btn" data-kind="'+kind+'" data-i="'+i+'" style="height:26px; padding:0 10px; font-size:12px; color:var(--text-danger); flex-shrink:0;">削除</button>';
+        h += '</div>';
+      }
+      h += '</div>';
+    });
+    h += '</div>';
+    return h;
+  }
+
+  html += '<p style="font-size:14px; font-weight:600; margin:0 0 10px;">科</p>';
+  html += rowsHtml(classList, 'class', classificationUsageCount);
+  html += '<p style="font-size:14px; font-weight:600; margin:0 0 10px;">属</p>';
+  html += rowsHtml(genusList, 'genus', genusUsageCount);
+
+  return html;
+}
+
+function bindTaxonomyEvents() {
+  document.getElementById('back-btn').onclick = () => { taxonomyEditing = null; taxonomyDeleteConfirm = null; taxonomyEditError = null; view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+
+  document.querySelectorAll('.taxonomy-edit-btn').forEach(btn => {
+    btn.onclick = () => { taxonomyDeleteConfirm = null; taxonomyEditError = null; taxonomyEditing = { kind: btn.dataset.kind, i: Number(btn.dataset.i) }; render(); };
+  });
+  document.querySelectorAll('.taxonomy-edit-cancel').forEach(btn => {
+    btn.onclick = () => { taxonomyEditing = null; taxonomyEditError = null; render(); };
+  });
+  document.querySelectorAll('.taxonomy-edit-save').forEach(btn => {
+    btn.onclick = async () => {
+      const kind = btn.dataset.kind;
+      const i = Number(btn.dataset.i);
+      const input = document.querySelector('.taxonomy-edit-input[data-kind="'+kind+'"][data-i="'+i+'"]');
+      const newName = input.value.trim();
+      if (!newName) return;
+      const list = kind === 'class' ? classList : genusList;
+      const oldName = list[i];
+      if (newName === oldName) { taxonomyEditing = null; taxonomyEditError = null; render(); return; }
+      const dup = list.some((n, idx) => idx !== i && n === newName);
+      if (dup) { taxonomyEditError = { kind, i, message: '「'+newName+'」は既に登録されています' }; render(); return; }
+      list[i] = newName;
+      if (kind === 'class') {
+        await saveClassList();
+        plants.forEach(p => { if (p.classification === oldName) p.classification = newName; });
+      } else {
+        await saveGenusList();
+        plants.forEach(p => { if (p.genus === oldName) p.genus = newName; });
+      }
+      await savePlants();
+      taxonomyEditing = null;
+      taxonomyEditError = null;
+      render();
+    };
+  });
+
+  document.querySelectorAll('.taxonomy-delete-btn').forEach(btn => {
+    btn.onclick = () => { taxonomyEditing = null; taxonomyDeleteConfirm = { kind: btn.dataset.kind, i: Number(btn.dataset.i) }; render(); };
+  });
+  document.querySelectorAll('.taxonomy-delete-cancel').forEach(btn => {
+    btn.onclick = () => { taxonomyDeleteConfirm = null; render(); };
+  });
+  document.querySelectorAll('.taxonomy-delete-confirm').forEach(btn => {
+    btn.onclick = async () => {
+      const kind = btn.dataset.kind;
+      const i = Number(btn.dataset.i);
+      if (kind === 'class') { classList[i] = null; await saveClassList(); }
+      else { genusList[i] = null; await saveGenusList(); }
+      taxonomyDeleteConfirm = null;
+      render();
+    };
+  });
 }
 
 function renderCalendar() {
@@ -693,8 +810,8 @@ function bindTagPickerEvents() {
 
 function bindFormEvents(editId) {
   document.getElementById('back-btn').onclick = () => { view = { screen: editId?'detail':'list', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); };
-  bindCombo('f-class', sortJa(classList));
-  bindCombo('f-genus', sortJa(genusList));
+  bindCombo('f-class', sortJa(classList.filter(Boolean)));
+  bindCombo('f-genus', sortJa(genusList.filter(Boolean)));
   bindCombo('f-name', sortJa(usedSpeciesNames()));
   bindCombo('f-common', sortJa(usedCommonNames()));
   bindCombo('f-place', sortJa(usedPurchaseLocations()));
