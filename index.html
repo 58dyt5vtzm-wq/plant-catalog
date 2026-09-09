@@ -1112,7 +1112,7 @@ function bindDetailEvents() {
       return t + '…';
     }
 
-    const labelFont = '400 24px sans-serif';
+    const labelFont = '700 36px sans-serif';
     ctx.font = labelFont;
     const cgText = truncateToFit(classGenusText(p), textAreaWidth);
     const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
@@ -1131,8 +1131,8 @@ function bindDetailEvents() {
       ctx.drawImage(qrImg, padX, (canvas.height-qrSize)/2, qrSize, qrSize);
 
       // Pull the two lines close together and center the block vertically
-      const lineHeight = 27; // tight line spacing
-      const lineGap = 3;
+      const lineHeight = 38; // tight line spacing
+      const lineGap = 4;
       const blockHeight = lineHeight * 2 + lineGap;
       const blockStartY = (canvas.height - blockHeight) / 2 + lineHeight / 2;
 
