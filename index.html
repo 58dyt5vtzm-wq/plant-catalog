@@ -1095,14 +1095,13 @@ function bindDetailEvents() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
+    ctx.textAlign = 'left';
 
     const qrSize = qrSizeMm * scale;
     const padX = padMm * scale;
     const gap = gapMm * scale;
     const textAreaStart = padX + qrSize + gap;
     const textAreaWidth = canvas.width - textAreaStart - padX;
-    const textCenterX = textAreaStart + textAreaWidth / 2;
 
     function truncateToFit(text, maxWidth) {
       if (!text) return '';
@@ -1112,7 +1111,7 @@ function bindDetailEvents() {
       return t + '…';
     }
 
-    const labelFont = '700 36px sans-serif';
+    const labelFont = "700 36px 'Avenir Next', Futura, 'Century Gothic', -apple-system, sans-serif";
     ctx.font = labelFont;
     const cgText = truncateToFit(p.genus || '', textAreaWidth);
     const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
@@ -1138,8 +1137,8 @@ function bindDetailEvents() {
 
       ctx.fillStyle = '#000000';
       ctx.font = labelFont;
-      ctx.fillText(cgText, textCenterX, blockStartY);
-      ctx.fillText(nameText, textCenterX, blockStartY + lineHeight + lineGap);
+      ctx.fillText(cgText, textAreaStart, blockStartY);
+      ctx.fillText(nameText, textAreaStart, blockStartY + lineHeight + lineGap);
 
       document.body.removeChild(qrTemp);
       canvas.toBlob((blob) => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'label_'+p.managementNumber+'.png'; a.click(); URL.revokeObjectURL(url); });
