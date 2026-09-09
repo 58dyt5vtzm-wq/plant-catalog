@@ -1114,7 +1114,7 @@ function bindDetailEvents() {
 
     const labelFont = '700 36px sans-serif';
     ctx.font = labelFont;
-    const cgText = truncateToFit(classGenusText(p), textAreaWidth);
+    const cgText = truncateToFit(p.genus || '', textAreaWidth);
     const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
     const nameText = truncateToFit(nameMnCombined, textAreaWidth);
 
