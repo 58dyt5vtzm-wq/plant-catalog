@@ -111,7 +111,7 @@ function purchaseLineText(p){
   if (p.purchaseLocation) parts.push(p.purchaseLocation);
   return parts.join(' ');
 }
-function nameWithCommon(p){ return p.commonName ? p.name+'('+p.commonName+')' : p.name; }
+function nameWithCommon(p){ return p.commonName ? p.name+' （'+p.commonName+'）' : p.name; }
 function labelDisplayName(p, mode){ if (mode === 'common' && p.commonName) return p.commonName; return p.name; }
 function titleLineText(p){ return [p.classification, p.genus, nameWithCommon(p)].filter(Boolean).join(' '); }
 function classGenusText(p){ return [p.classification, p.genus].filter(Boolean).join(' '); }
