@@ -862,7 +862,6 @@ function bindFormEvents(editId) {
 function renderDetail(id) {
   const p = plants.find(x=>x.id===id);
   if (!p) { view = { screen:'list', plantId:null, mode:'all', query:'', sortBy:'name' }; return renderList(); }
-  labelNameMode = (p.commonName ? labelNameMode : 'species');
   const removedTagsLog = p.removedTagsLog || [];
   let html = '';
   html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
@@ -970,14 +969,8 @@ function renderDetail(id) {
     html += '<div style="padding:0 1rem 1.25rem; display:flex; flex-direction:column; align-items:center; gap:10px;">';
     html += '<div id="qr-code"></div>';
     html += '<p style="font-size:12px; color:var(--text-muted); margin:0;">'+escapeHtml(p.managementNumber)+'</p>';
-    if (p.commonName) {
-      html += '<div style="display:flex; gap:6px;">';
-      html += pillBtn('lbl-species', '種', labelNameMode==='species');
-      html += pillBtn('lbl-common', '和名', labelNameMode==='common');
-      html += '</div>';
-    }
     html += '<button class="app-btn" id="label-download-btn" style="width:100%; height:38px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px; background:var(--fill-primary); color:var(--on-primary); border:none;"><i class="ti ti-download" style="font-size:15px;" aria-hidden="true"></i>ラベル画像</button>';
-    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、黒デザイン・透明背景・中央揃えで科属・種名(または和名)+管理番号の2行を印刷できます</p>';
+    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、黒デザイン・透明背景・左揃えで科・属、種名（和名）の2行を印刷できます</p>';
     html += '</div>';
   }
   html += '</div>';
@@ -1074,11 +1067,6 @@ function bindDetailEvents() {
 
   if (!qrExpanded) return;
 
-  const speciesBtn = document.querySelector('[data-key="lbl-species"]');
-  const commonBtn = document.querySelector('[data-key="lbl-common"]');
-  if (speciesBtn) speciesBtn.onclick = () => { labelNameMode = 'species'; render(); };
-  if (commonBtn) commonBtn.onclick = () => { labelNameMode = 'common'; render(); };
-
   new QRCode(document.getElementById('qr-code'), { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: 120, height: 120 });
 
   document.getElementById('label-download-btn').onclick = () => {
@@ -1113,9 +1101,8 @@ function bindDetailEvents() {
 
     const labelFont = "700 36px 'Avenir Next', Futura, 'Century Gothic', -apple-system, sans-serif";
     ctx.font = labelFont;
-    const cgText = truncateToFit(p.genus || '', textAreaWidth);
-    const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
-    const nameText = truncateToFit(nameMnCombined, textAreaWidth);
+    const cgText = truncateToFit(classGenusText(p), textAreaWidth);
+    const nameText = truncateToFit(nameWithCommon(p), textAreaWidth);
 
     // Generate a separate black QR code on transparent background for the printed label
     // (this "white ink on clear tape" printer app expects black design and converts it to white ink automatically)
