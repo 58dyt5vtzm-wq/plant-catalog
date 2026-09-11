@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root {
     --bg-success: #e6f4ea;
@@ -59,6 +60,10 @@
 <div id="app"></div>
 
 <script>
+// ↓↓↓ Google Cloud Console で発行した OAuth クライアントIDに書き換えてください ↓↓↓
+const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID.apps.googleusercontent.com';
+const GDRIVE_BACKUP_FILENAME = 'plant-tracker-backup.json';
+
 let plants = [];
 let classList = [];
 let genusList = [];
@@ -79,6 +84,11 @@ let tagAddOpenFor = null;
 let taxonomyEditing = null;
 let taxonomyEditError = null;
 let taxonomyDeleteConfirm = null;
+let gdriveTokenClient = null;
+let gdriveAccessToken = null;
+let gdriveStatus = 'idle';
+let gdriveMessage = '';
+let gdriveLastSync = null;
 
 // --- storage: uses localStorage so data persists in this browser ---
 const storage = {
@@ -90,6 +100,7 @@ async function loadAll() {
   try { const r = await storage.get('plants-data'); plants = r ? JSON.parse(r.value) : []; } catch(e) { plants = []; }
   try { const r = await storage.get('class-list'); if (r) classList = JSON.parse(r.value); } catch(e) {}
   try { const r = await storage.get('genus-list'); if (r) genusList = JSON.parse(r.value); } catch(e) {}
+  try { const r = await storage.get('gdrive-last-sync'); if (r) gdriveLastSync = r.value; } catch(e) {}
   rebuildListsFromPlants();
   renumberAll();
   await savePlants(); await saveClassList(); await saveGenusList();
@@ -98,6 +109,132 @@ async function loadAll() {
 async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} }
 async function saveClassList() { try { await storage.set('class-list', JSON.stringify(classList)); } catch(e){} }
 async function saveGenusList() { try { await storage.set('genus-list', JSON.stringify(genusList)); } catch(e){} }
+
+// --- Google Drive backup/restore (manual, uses drive.file scope: app can only see files it created) ---
+function gdriveEnsureTokenClient() {
+  if (gdriveTokenClient) return gdriveTokenClient;
+  if (!window.google || !google.accounts || !google.accounts.oauth2) return null;
+  gdriveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/drive.file',
+    callback: (resp) => {
+      if (resp && resp.access_token) {
+        gdriveAccessToken = resp.access_token;
+        gdriveMessage = 'Googleアカウントに接続しました';
+      } else {
+        gdriveMessage = '接続に失敗しました';
+      }
+      render();
+    }
+  });
+  return gdriveTokenClient;
+}
+
+function gdriveConnect() {
+  if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.indexOf('YOUR_') === 0) {
+    gdriveMessage = '先にコード内の GOOGLE_CLIENT_ID を設定してください';
+    render();
+    return;
+  }
+  const client = gdriveEnsureTokenClient();
+  if (!client) {
+    gdriveMessage = 'Google連携の読み込みに失敗しました。時間をおいて再読み込みしてください';
+    render();
+    return;
+  }
+  client.requestAccessToken();
+}
+
+async function gdriveFindBackupFile() {
+  const q = "name='" + GDRIVE_BACKUP_FILENAME + "' and trashed=false";
+  const url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&fields=files(id,modifiedTime)&spaces=drive';
+  const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + gdriveAccessToken } });
+  if (!res.ok) throw new Error('検索に失敗しました (' + res.status + ')');
+  const data = await res.json();
+  return (data.files && data.files[0]) || null;
+}
+
+async function gdriveCreateFile(contentStr) {
+  const boundary = 'plant_tracker_boundary';
+  const delimiter = '\r\n--' + boundary + '\r\n';
+  const closeDelim = '\r\n--' + boundary + '--';
+  const metadata = { name: GDRIVE_BACKUP_FILENAME, mimeType: 'application/json' };
+  const body = delimiter +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) +
+    delimiter +
+    'Content-Type: application/json\r\n\r\n' + contentStr +
+    closeDelim;
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + gdriveAccessToken, 'Content-Type': 'multipart/related; boundary="' + boundary + '"' },
+    body: body
+  });
+  if (!res.ok) throw new Error('作成に失敗しました (' + res.status + ')');
+  return await res.json();
+}
+
+async function gdriveUpdateFile(fileId, contentStr) {
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files/' + fileId + '?uploadType=media', {
+    method: 'PATCH',
+    headers: { 'Authorization': 'Bearer ' + gdriveAccessToken, 'Content-Type': 'application/json' },
+    body: contentStr
+  });
+  if (!res.ok) throw new Error('更新に失敗しました (' + res.status + ')');
+  return await res.json();
+}
+
+async function gdriveDownloadFile(fileId) {
+  const res = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
+    headers: { 'Authorization': 'Bearer ' + gdriveAccessToken }
+  });
+  if (!res.ok) throw new Error('ダウンロードに失敗しました (' + res.status + ')');
+  return await res.text();
+}
+
+async function gdriveBackup() {
+  if (!gdriveAccessToken) { gdriveMessage = 'まずGoogleアカウントに接続してください'; render(); return; }
+  gdriveStatus = 'syncing'; gdriveMessage = 'バックアップ中...'; render();
+  try {
+    const payload = JSON.stringify({ plants, classList, genusList, savedAt: new Date().toISOString() });
+    const existing = await gdriveFindBackupFile();
+    if (existing) { await gdriveUpdateFile(existing.id, payload); }
+    else { await gdriveCreateFile(payload); }
+    gdriveLastSync = new Date().toISOString();
+    await storage.set('gdrive-last-sync', gdriveLastSync);
+    gdriveMessage = 'バックアップが完了しました';
+  } catch (e) {
+    gdriveMessage = 'バックアップに失敗しました: ' + e.message;
+  }
+  gdriveStatus = 'idle';
+  render();
+}
+
+async function gdriveRestore() {
+  if (!gdriveAccessToken) { gdriveMessage = 'まずGoogleアカウントに接続してください'; render(); return; }
+  if (!window.confirm('Googleドライブのバックアップで、この端末のデータを上書きします。よろしいですか？')) return;
+  gdriveStatus = 'syncing'; gdriveMessage = '復元中...'; render();
+  try {
+    const existing = await gdriveFindBackupFile();
+    if (!existing) {
+      gdriveMessage = 'バックアップファイルが見つかりませんでした';
+      gdriveStatus = 'idle'; render(); return;
+    }
+    const text = await gdriveDownloadFile(existing.id);
+    const data = JSON.parse(text);
+    plants = data.plants || [];
+    classList = data.classList || [];
+    genusList = data.genusList || [];
+    await savePlants(); await saveClassList(); await saveGenusList();
+    gdriveLastSync = new Date().toISOString();
+    await storage.set('gdrive-last-sync', gdriveLastSync);
+    gdriveMessage = '復元が完了しました';
+    view = { screen:'list', plantId:null, mode:'all', query:'', sortBy:'name' };
+  } catch (e) {
+    gdriveMessage = '復元に失敗しました: ' + e.message;
+  }
+  gdriveStatus = 'idle';
+  render();
+}
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function pad(n,len){ return String(n).padStart(len,'0'); }
@@ -236,6 +373,7 @@ function render() {
   else if (view.screen === 'scan') { app.innerHTML = renderScan(); bindScanEvents(); }
   else if (view.screen === 'calendar') { app.innerHTML = renderCalendar(); bindCalendarEvents(); }
   else if (view.screen === 'taxonomy') { app.innerHTML = renderTaxonomyManage(); bindTaxonomyEvents(); }
+  else if (view.screen === 'backup') { app.innerHTML = renderBackup(); bindBackupEvents(); }
 }
 
 function pillBtn(key, label, active) {
@@ -286,6 +424,7 @@ function renderList() {
   html += '<button class="app-btn" id="cal-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-calendar" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<button class="app-btn" id="scan-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-qrcode" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<button class="app-btn" id="taxonomy-manage-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-settings" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<button class="app-btn" id="backup-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-cloud" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<button class="app-btn" id="add-btn" style="display:flex; align-items:center; gap:6px; padding:0 14px; height:36px; background:var(--fill-primary); color:var(--on-primary); border:none;"><i class="ti ti-plus" style="font-size:18px;" aria-hidden="true"></i>追加</button>';
   html += '</div></div>';
 
@@ -346,6 +485,7 @@ function bindListEvents() {
   document.getElementById('scan-btn').onclick = () => { view = { screen:'scan', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('cal-btn').onclick = () => { cal.selected = null; calJumpOpen=false; view = { screen:'calendar', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   document.getElementById('taxonomy-manage-btn').onclick = () => { view = { screen:'taxonomy', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  document.getElementById('backup-btn').onclick = () => { view = { screen:'backup', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   const searchInput = document.getElementById('search-input');
   searchInput.oninput = () => { view.query = searchInput.value; render(); const si=document.getElementById('search-input'); si.focus(); si.setSelectionRange(view.query.length, view.query.length); };
   document.getElementById('sort-select').onchange = (e) => { view.sortBy = e.target.value; render(); };
@@ -460,6 +600,47 @@ function bindTaxonomyEvents() {
       render();
     };
   });
+}
+
+function renderBackup() {
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
+  html += '<button class="app-btn" id="backup-back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:19px; font-weight:600;">バックアップ・復元</h3>';
+  html += '</div>';
+
+  html += '<div class="app-card" style="background:var(--surface-1); padding:1rem; margin-bottom:1rem;">';
+  html += '<p style="margin:0 0 6px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px;"><i class="ti ti-brand-google-drive" aria-hidden="true"></i>Googleドライブ</p>';
+  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-muted); line-height:1.6;">植物データと写真をこのGoogleアカウントのドライブに「'+escapeHtml(GDRIVE_BACKUP_FILENAME)+'」として保存します。別の端末で同じアカウントに接続し「復元」を行うと、データを引き継げます(自動同期ではなく、手動でのバックアップ・復元です)。</p>';
+
+  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-secondary);">状態: '+(gdriveAccessToken ? '接続済み' : '未接続')+'</p>';
+
+  if (!gdriveAccessToken) {
+    html += '<button class="app-btn" id="gdrive-connect-btn" style="width:100%; height:40px; font-size:13px; margin-bottom:8px;">Googleアカウントに接続</button>';
+  }
+  const disabled = gdriveAccessToken ? '' : 'disabled';
+  const opac = gdriveAccessToken ? '1' : '0.5';
+  html += '<button class="app-btn" id="gdrive-backup-btn" '+disabled+' style="width:100%; height:40px; font-size:13px; margin-bottom:8px; background:var(--fill-primary); color:var(--on-primary); border:none; opacity:'+opac+';">今すぐバックアップ</button>';
+  html += '<button class="app-btn" id="gdrive-restore-btn" '+disabled+' style="width:100%; height:40px; font-size:13px; opacity:'+opac+';">Googleドライブから復元</button>';
+
+  if (gdriveMessage) html += '<p style="margin:10px 0 0; font-size:12px; color:var(--text-accent);">'+escapeHtml(gdriveMessage)+'</p>';
+  if (gdriveLastSync) {
+    const d = new Date(gdriveLastSync);
+    const t = fmtDate(gdriveLastSync)+' '+pad(d.getHours(),2)+':'+pad(d.getMinutes(),2);
+    html += '<p style="margin:6px 0 0; font-size:11px; color:var(--text-muted);">最終同期: '+escapeHtml(t)+'</p>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function bindBackupEvents() {
+  document.getElementById('backup-back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+  const connectBtn = document.getElementById('gdrive-connect-btn');
+  if (connectBtn) connectBtn.onclick = () => gdriveConnect();
+  const backupBtn = document.getElementById('gdrive-backup-btn');
+  if (backupBtn) backupBtn.onclick = () => gdriveBackup();
+  const restoreBtn = document.getElementById('gdrive-restore-btn');
+  if (restoreBtn) restoreBtn.onclick = () => gdriveRestore();
 }
 
 function renderCalendar() {
