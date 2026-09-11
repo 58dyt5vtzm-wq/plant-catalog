@@ -105,12 +105,15 @@ async function loadAll() {
   renumberAll();
   await savePlants(); await saveClassList(); await saveGenusList();
   render();
+  try { const r = await storage.get('gdrive-connected'); if (r && r.value === '1') gdriveTrySilentConnect(0); } catch(e) {}
 }
-async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} }
+async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} scheduleGdriveAutoBackup(); }
 async function saveClassList() { try { await storage.set('class-list', JSON.stringify(classList)); } catch(e){} }
 async function saveGenusList() { try { await storage.set('genus-list', JSON.stringify(genusList)); } catch(e){} }
 
-// --- Google Drive backup/restore (manual, uses drive.file scope: app can only see files it created) ---
+// --- Google Drive backup/restore (uses drive.file scope: app can only see files it created) ---
+let gdriveAutoSyncTimer = null;
+
 function gdriveEnsureTokenClient() {
   if (gdriveTokenClient) return gdriveTokenClient;
   if (!window.google || !google.accounts || !google.accounts.oauth2) return null;
@@ -121,6 +124,9 @@ function gdriveEnsureTokenClient() {
       if (resp && resp.access_token) {
         gdriveAccessToken = resp.access_token;
         gdriveMessage = 'Googleアカウントに接続しました';
+        storage.set('gdrive-connected', '1');
+        gdriveMaybeOfferRestore();
+        gdriveScheduleTokenRefresh();
       } else {
         gdriveMessage = '接続に失敗しました';
       }
@@ -128,6 +134,26 @@ function gdriveEnsureTokenClient() {
     }
   });
   return gdriveTokenClient;
+}
+
+// Silently try to reconnect on app load, using the consent already granted last time.
+// Not guaranteed to work in every browser (some block silent popups), so it may
+// occasionally require pressing "接続" again — this is a browser security limit, not a bug.
+function gdriveTrySilentConnect(retry) {
+  if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.indexOf('YOUR_') === 0) return;
+  if (!window.google || !google.accounts || !google.accounts.oauth2) {
+    if (retry < 10) setTimeout(() => gdriveTrySilentConnect(retry + 1), 400);
+    return;
+  }
+  const client = gdriveEnsureTokenClient();
+  if (!client) return;
+  try { client.requestAccessToken({ prompt: '' }); } catch(e) {}
+}
+
+// Access tokens expire after ~1 hour; quietly try to renew a bit before that
+// so auto-backup keeps working during a long session.
+function gdriveScheduleTokenRefresh() {
+  setTimeout(() => { if (gdriveTokenClient) { try { gdriveTokenClient.requestAccessToken({ prompt: '' }); } catch(e) {} } }, 50 * 60 * 1000);
 }
 
 function gdriveConnect() {
@@ -143,6 +169,13 @@ function gdriveConnect() {
     return;
   }
   client.requestAccessToken();
+}
+
+function gdriveDisconnect() {
+  gdriveAccessToken = null;
+  gdriveMessage = '接続を解除しました';
+  storage.set('gdrive-connected', '0');
+  render();
 }
 
 async function gdriveFindBackupFile() {
@@ -195,12 +228,7 @@ async function gdriveBackup() {
   if (!gdriveAccessToken) { gdriveMessage = 'まずGoogleアカウントに接続してください'; render(); return; }
   gdriveStatus = 'syncing'; gdriveMessage = 'バックアップ中...'; render();
   try {
-    const payload = JSON.stringify({ plants, classList, genusList, savedAt: new Date().toISOString() });
-    const existing = await gdriveFindBackupFile();
-    if (existing) { await gdriveUpdateFile(existing.id, payload); }
-    else { await gdriveCreateFile(payload); }
-    gdriveLastSync = new Date().toISOString();
-    await storage.set('gdrive-last-sync', gdriveLastSync);
+    await gdriveDoBackup();
     gdriveMessage = 'バックアップが完了しました';
   } catch (e) {
     gdriveMessage = 'バックアップに失敗しました: ' + e.message;
@@ -209,9 +237,48 @@ async function gdriveBackup() {
   render();
 }
 
-async function gdriveRestore() {
+// Shared upload logic used by both the manual button and the silent auto-backup.
+async function gdriveDoBackup() {
+  const payload = JSON.stringify({ plants, classList, genusList, savedAt: new Date().toISOString() });
+  const existing = await gdriveFindBackupFile();
+  if (existing) { await gdriveUpdateFile(existing.id, payload); }
+  else { await gdriveCreateFile(payload); }
+  gdriveLastSync = new Date().toISOString();
+  await storage.set('gdrive-last-sync', gdriveLastSync);
+}
+
+// Called automatically after any change to plants data (see savePlants). Debounced so a
+// burst of edits results in one upload, and silent (no dialogs, no re-render) so it
+// never interrupts whatever the person is doing — e.g. typing in a field.
+function scheduleGdriveAutoBackup() {
+  if (!gdriveAccessToken) return;
+  clearTimeout(gdriveAutoSyncTimer);
+  gdriveAutoSyncTimer = setTimeout(() => {
+    gdriveDoBackup().catch((e) => console.warn('Googleドライブへの自動バックアップに失敗しました', e));
+  }, 2500);
+}
+
+// After connecting (manually or silently on load), check whether Drive already has a
+// newer backup than what's on this device — e.g. changes made on another device — and
+// offer to pull it in.
+async function gdriveMaybeOfferRestore() {
+  if (!gdriveAccessToken) return;
+  try {
+    const existing = await gdriveFindBackupFile();
+    if (!existing || !existing.modifiedTime) return;
+    const remoteTime = new Date(existing.modifiedTime).getTime();
+    const localTime = gdriveLastSync ? new Date(gdriveLastSync).getTime() : 0;
+    if (remoteTime > localTime + 5000) {
+      if (window.confirm('Googleドライブに、この端末より新しいバックアップがあります。復元しますか？')) {
+        await gdriveRestore(true);
+      }
+    }
+  } catch(e) { console.warn(e); }
+}
+
+async function gdriveRestore(skipConfirm) {
   if (!gdriveAccessToken) { gdriveMessage = 'まずGoogleアカウントに接続してください'; render(); return; }
-  if (!window.confirm('Googleドライブのバックアップで、この端末のデータを上書きします。よろしいですか？')) return;
+  if (!skipConfirm && !window.confirm('Googleドライブのバックアップで、この端末のデータを上書きします。よろしいですか？')) return;
   gdriveStatus = 'syncing'; gdriveMessage = '復元中...'; render();
   try {
     const existing = await gdriveFindBackupFile();
@@ -224,7 +291,8 @@ async function gdriveRestore() {
     plants = data.plants || [];
     classList = data.classList || [];
     genusList = data.genusList || [];
-    await savePlants(); await saveClassList(); await saveGenusList();
+    await storage.set('plants-data', JSON.stringify(plants));
+    await saveClassList(); await saveGenusList();
     gdriveLastSync = new Date().toISOString();
     await storage.set('gdrive-last-sync', gdriveLastSync);
     gdriveMessage = '復元が完了しました';
@@ -611,9 +679,9 @@ function renderBackup() {
 
   html += '<div class="app-card" style="background:var(--surface-1); padding:1rem; margin-bottom:1rem;">';
   html += '<p style="margin:0 0 6px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px;"><i class="ti ti-brand-google-drive" aria-hidden="true"></i>Googleドライブ</p>';
-  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-muted); line-height:1.6;">植物データと写真をこのGoogleアカウントのドライブに「'+escapeHtml(GDRIVE_BACKUP_FILENAME)+'」として保存します。別の端末で同じアカウントに接続し「復元」を行うと、データを引き継げます(自動同期ではなく、手動でのバックアップ・復元です)。</p>';
+  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-muted); line-height:1.6;">一度接続すると、変更のたびにこのGoogleアカウントのドライブへ「'+escapeHtml(GDRIVE_BACKUP_FILENAME)+'」として自動でバックアップされます。次にこのアプリを開いたときも自動で再接続を試みます(うまくいかない場合のみ、再度「接続」を押してください)。別の端末で同じアカウントに接続すると、新しいバックアップがあれば復元するか聞かれます。</p>';
 
-  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-secondary);">状態: '+(gdriveAccessToken ? '接続済み' : '未接続')+'</p>';
+  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-secondary);">状態: '+(gdriveAccessToken ? '接続済み(自動バックアップ中)' : '未接続')+'</p>';
 
   if (!gdriveAccessToken) {
     html += '<button class="app-btn" id="gdrive-connect-btn" style="width:100%; height:40px; font-size:13px; margin-bottom:8px;">Googleアカウントに接続</button>';
@@ -621,7 +689,10 @@ function renderBackup() {
   const disabled = gdriveAccessToken ? '' : 'disabled';
   const opac = gdriveAccessToken ? '1' : '0.5';
   html += '<button class="app-btn" id="gdrive-backup-btn" '+disabled+' style="width:100%; height:40px; font-size:13px; margin-bottom:8px; background:var(--fill-primary); color:var(--on-primary); border:none; opacity:'+opac+';">今すぐバックアップ</button>';
-  html += '<button class="app-btn" id="gdrive-restore-btn" '+disabled+' style="width:100%; height:40px; font-size:13px; opacity:'+opac+';">Googleドライブから復元</button>';
+  html += '<button class="app-btn" id="gdrive-restore-btn" '+disabled+' style="width:100%; height:40px; font-size:13px; margin-bottom:8px; opacity:'+opac+';">Googleドライブから復元</button>';
+  if (gdriveAccessToken) {
+    html += '<button class="app-btn" id="gdrive-disconnect-btn" style="width:100%; height:40px; font-size:13px; color:var(--text-muted);">接続を解除</button>';
+  }
 
   if (gdriveMessage) html += '<p style="margin:10px 0 0; font-size:12px; color:var(--text-accent);">'+escapeHtml(gdriveMessage)+'</p>';
   if (gdriveLastSync) {
@@ -641,6 +712,8 @@ function bindBackupEvents() {
   if (backupBtn) backupBtn.onclick = () => gdriveBackup();
   const restoreBtn = document.getElementById('gdrive-restore-btn');
   if (restoreBtn) restoreBtn.onclick = () => gdriveRestore();
+  const disconnectBtn = document.getElementById('gdrive-disconnect-btn');
+  if (disconnectBtn) disconnectBtn.onclick = () => gdriveDisconnect();
 }
 
 function renderCalendar() {
