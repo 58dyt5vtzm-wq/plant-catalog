@@ -1205,7 +1205,7 @@ function renderDetail(id) {
     html += '<div id="qr-code"></div>';
     html += '<p style="font-size:12px; color:var(--text-muted); margin:0;">'+escapeHtml(p.managementNumber)+'</p>';
     html += '<button class="app-btn" id="label-download-btn" style="width:100%; height:38px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px; background:var(--fill-primary); color:var(--on-primary); border:none;"><i class="ti ti-download" style="font-size:15px;" aria-hidden="true"></i>ラベル画像</button>';
-    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、黒デザイン・透明背景・左揃えで属、管理番号(属コード.種名-枝番号)の2行を印刷できます</p>';
+    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、黒デザイン・透明背景・左揃えで管理番号(属コード.種名-枝番号)、購入日・購入場所の2行を印刷できます</p>';
     html += '</div>';
   }
   html += '</div>';
@@ -1334,10 +1334,11 @@ function bindDetailEvents() {
       return t + '…';
     }
 
-    const labelFont = "700 36px 'Avenir Next', Futura, 'Century Gothic', -apple-system, sans-serif";
+    const labelFont = "700 36px 'Yu Gothic', 'YuGothic', '游ゴシック体', '游ゴシック', sans-serif";
     ctx.font = labelFont;
-    const cgText = truncateToFit(p.genus || '', textAreaWidth);
-    const nameText = truncateToFit(p.managementNumber || '', textAreaWidth);
+    const cgText = truncateToFit(p.managementNumber || '', textAreaWidth);
+    const dateLoc = [p.addedDate ? fmtDate(p.addedDate) : '', p.purchaseLocation || ''].filter(Boolean).join(' ');
+    const nameText = truncateToFit(dateLoc, textAreaWidth);
 
     // Generate a separate black QR code on transparent background for the printed label
     // (this "white ink on clear tape" printer app expects black design and converts it to white ink automatically)
