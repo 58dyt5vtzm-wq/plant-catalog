@@ -1335,9 +1335,11 @@ function bindDetailEvents() {
     }
 
     const labelFont = "700 36px 'Yu Gothic', 'YuGothic', '游ゴシック体', '游ゴシック', sans-serif";
+    const labelFont2 = "700 22px 'Yu Gothic', 'YuGothic', '游ゴシック体', '游ゴシック', sans-serif";
     ctx.font = labelFont;
     const cgText = truncateToFit(p.managementNumber || '', textAreaWidth);
     const dateLoc = [p.addedDate ? fmtDate(p.addedDate) : '', p.purchaseLocation || ''].filter(Boolean).join(' ');
+    ctx.font = labelFont2;
     const nameText = truncateToFit(dateLoc, textAreaWidth);
 
     // Generate a separate black QR code on transparent background for the printed label
@@ -1352,16 +1354,19 @@ function bindDetailEvents() {
       const qrImg = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
       ctx.drawImage(qrImg, padX, (canvas.height-qrSize)/2, qrSize, qrSize);
 
-      // Pull the two lines close together and center the block vertically
-      const lineHeight = 38; // tight line spacing
-      const lineGap = 4;
-      const blockHeight = lineHeight * 2 + lineGap;
-      const blockStartY = (canvas.height - blockHeight) / 2 + lineHeight / 2;
+      // Line 1 (management number) is larger than line 2 (date/location)
+      const lineHeight1 = 38;
+      const lineHeight2 = 26;
+      const lineGap = 6;
+      const blockHeight = lineHeight1 + lineGap + lineHeight2;
+      const blockStartY = (canvas.height - blockHeight) / 2 + lineHeight1 / 2;
+      const line2Y = blockStartY + lineHeight1 / 2 + lineGap + lineHeight2 / 2;
 
       ctx.fillStyle = '#000000';
       ctx.font = labelFont;
       ctx.fillText(cgText, textAreaStart, blockStartY);
-      ctx.fillText(nameText, textAreaStart, blockStartY + lineHeight + lineGap);
+      ctx.font = labelFont2;
+      ctx.fillText(nameText, textAreaStart, line2Y);
 
       document.body.removeChild(qrTemp);
       canvas.toBlob((blob) => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'label_'+p.managementNumber+'.png'; a.click(); URL.revokeObjectURL(url); });
