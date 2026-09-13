@@ -105,7 +105,6 @@ async function loadAll() {
   renumberAll();
   await savePlants(); await saveClassList(); await saveGenusList();
   render();
-  try { const r = await storage.get('gdrive-connected'); if (r && r.value === '1') gdriveTrySilentConnect(0); } catch(e) {}
 }
 async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} scheduleGdriveAutoBackup(); }
 async function saveClassList() { try { await storage.set('class-list', JSON.stringify(classList)); } catch(e){} }
@@ -126,7 +125,6 @@ function gdriveEnsureTokenClient() {
         gdriveMessage = 'Googleアカウントに接続しました';
         storage.set('gdrive-connected', '1');
         gdriveMaybeOfferRestore();
-        gdriveScheduleTokenRefresh();
       } else {
         gdriveMessage = '接続に失敗しました';
       }
@@ -136,24 +134,15 @@ function gdriveEnsureTokenClient() {
   return gdriveTokenClient;
 }
 
-// Silently try to reconnect on app load, using the consent already granted last time.
-// Not guaranteed to work in every browser (some block silent popups), so it may
-// occasionally require pressing "接続" again — this is a browser security limit, not a bug.
-function gdriveTrySilentConnect(retry) {
-  if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.indexOf('YOUR_') === 0) return;
-  if (!window.google || !google.accounts || !google.accounts.oauth2) {
-    if (retry < 10) setTimeout(() => gdriveTrySilentConnect(retry + 1), 400);
-    return;
+// If a request comes back unauthorized (expired/revoked token), drop the token so the
+// UI goes back to "未接続" and the person can reconnect with one tap. We deliberately do
+// NOT retry this silently — a script-initiated (non-click) token request gets flagged by
+// the browser as an unsolicited popup, which is worse than just asking to tap "接続" again.
+function gdriveHandleAuthError(status) {
+  if (status === 401) {
+    gdriveAccessToken = null;
+    gdriveMessage = '接続が切れました。もう一度「接続」を押してください';
   }
-  const client = gdriveEnsureTokenClient();
-  if (!client) return;
-  try { client.requestAccessToken({ prompt: '' }); } catch(e) {}
-}
-
-// Access tokens expire after ~1 hour; quietly try to renew a bit before that
-// so auto-backup keeps working during a long session.
-function gdriveScheduleTokenRefresh() {
-  setTimeout(() => { if (gdriveTokenClient) { try { gdriveTokenClient.requestAccessToken({ prompt: '' }); } catch(e) {} } }, 50 * 60 * 1000);
 }
 
 function gdriveConnect() {
@@ -182,7 +171,7 @@ async function gdriveFindBackupFile() {
   const q = "name='" + GDRIVE_BACKUP_FILENAME + "' and trashed=false";
   const url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&fields=files(id,modifiedTime)&spaces=drive';
   const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + gdriveAccessToken } });
-  if (!res.ok) throw new Error('検索に失敗しました (' + res.status + ')');
+  if (!res.ok) { gdriveHandleAuthError(res.status); throw new Error('検索に失敗しました (' + res.status + ')'); }
   const data = await res.json();
   return (data.files && data.files[0]) || null;
 }
@@ -202,7 +191,7 @@ async function gdriveCreateFile(contentStr) {
     headers: { 'Authorization': 'Bearer ' + gdriveAccessToken, 'Content-Type': 'multipart/related; boundary="' + boundary + '"' },
     body: body
   });
-  if (!res.ok) throw new Error('作成に失敗しました (' + res.status + ')');
+  if (!res.ok) { gdriveHandleAuthError(res.status); throw new Error('作成に失敗しました (' + res.status + ')'); }
   return await res.json();
 }
 
@@ -212,7 +201,7 @@ async function gdriveUpdateFile(fileId, contentStr) {
     headers: { 'Authorization': 'Bearer ' + gdriveAccessToken, 'Content-Type': 'application/json' },
     body: contentStr
   });
-  if (!res.ok) throw new Error('更新に失敗しました (' + res.status + ')');
+  if (!res.ok) { gdriveHandleAuthError(res.status); throw new Error('更新に失敗しました (' + res.status + ')'); }
   return await res.json();
 }
 
@@ -220,7 +209,7 @@ async function gdriveDownloadFile(fileId) {
   const res = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
     headers: { 'Authorization': 'Bearer ' + gdriveAccessToken }
   });
-  if (!res.ok) throw new Error('ダウンロードに失敗しました (' + res.status + ')');
+  if (!res.ok) { gdriveHandleAuthError(res.status); throw new Error('ダウンロードに失敗しました (' + res.status + ')'); }
   return await res.text();
 }
 
@@ -569,6 +558,11 @@ function renderTaxonomyManage() {
   html += '<h3 style="margin:0; font-size:19px; font-weight:600;">科・属の管理</h3></div>';
   html += '<p style="font-size:12px; color:var(--text-muted); margin:0 0 1.25rem; line-height:1.6;">誤字などは「編集」で直せます(同じ番号のまま名前だけ変わります)。削除は使われていない項目のみ可能です。</p>';
 
+  html += '<div class="app-card" style="background:var(--surface-1); padding:10px 12px; margin-bottom:1.5rem;">';
+  html += '<p style="margin:0 0 8px; font-size:12px; color:var(--text-muted); line-height:1.6;">科・属を削除すると、その番号は欠番のまま残ります(印刷済みラベルの番号がズレないようにするためです)。欠番を詰めて振り直したい場合はこちら(全株の管理番号が変わります)。</p>';
+  html += '<button class="app-btn" id="taxonomy-reset-numbers-btn" style="width:100%; height:36px; font-size:12px;">欠番を詰めて管理番号を振り直す</button>';
+  html += '</div>';
+
   function rowsHtml(list, kind, usageFn) {
     let h = '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:1.5rem;">';
     const items = list.map((name,i)=>({name,i})).filter(x=>x.name);
@@ -618,6 +612,15 @@ function renderTaxonomyManage() {
 
 function bindTaxonomyEvents() {
   document.getElementById('back-btn').onclick = () => { taxonomyEditing = null; taxonomyDeleteConfirm = null; taxonomyEditError = null; view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+
+  document.getElementById('taxonomy-reset-numbers-btn').onclick = async () => {
+    if (!window.confirm('全ての株の管理番号を振り直します(欠番を詰めます)。すでに印刷したラベルの番号と合わなくなる場合があります。よろしいですか？')) return;
+    classList = classList.filter(Boolean);
+    genusList = genusList.filter(Boolean);
+    renumberAll();
+    await saveClassList(); await saveGenusList(); await savePlants();
+    render();
+  };
 
   document.querySelectorAll('.taxonomy-edit-btn').forEach(btn => {
     btn.onclick = () => { taxonomyDeleteConfirm = null; taxonomyEditError = null; taxonomyEditing = { kind: btn.dataset.kind, i: Number(btn.dataset.i) }; render(); };
@@ -679,7 +682,7 @@ function renderBackup() {
 
   html += '<div class="app-card" style="background:var(--surface-1); padding:1rem; margin-bottom:1rem;">';
   html += '<p style="margin:0 0 6px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px;"><i class="ti ti-brand-google-drive" aria-hidden="true"></i>Googleドライブ</p>';
-  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-muted); line-height:1.6;">一度接続すると、変更のたびにこのGoogleアカウントのドライブへ「'+escapeHtml(GDRIVE_BACKUP_FILENAME)+'」として自動でバックアップされます。次にこのアプリを開いたときも自動で再接続を試みます(うまくいかない場合のみ、再度「接続」を押してください)。別の端末で同じアカウントに接続すると、新しいバックアップがあれば復元するか聞かれます。</p>';
+  html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-muted); line-height:1.6;">「接続」を押すと、このGoogleアカウントのドライブへ「'+escapeHtml(GDRIVE_BACKUP_FILENAME)+'」として自動でバックアップされます(変更のたびに裏で静かに同期、通知やポップアップは出ません)。ただし接続はこのタブを閉じると切れるので、次にアプリを開いたときは「接続」をもう一度押してください(ブラウザの安全上の制限で、ボタン操作なしでは繋がりません)。別の端末で同じアカウントに接続すると、新しいバックアップがあれば復元するか聞かれます。</p>';
 
   html += '<p style="margin:0 0 10px; font-size:12px; color:var(--text-secondary);">状態: '+(gdriveAccessToken ? '接続済み(自動バックアップ中)' : '未接続')+'</p>';
 
