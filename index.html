@@ -65,7 +65,6 @@ const GOOGLE_CLIENT_ID = '727777082286-86e06u0vola7be7ir7oabo6lc7937l1k.apps.goo
 const GDRIVE_BACKUP_FILENAME = 'plant-tracker-backup.json';
 
 let plants = [];
-let classList = [];
 let genusList = [];
 let view = { screen: 'list', plantId: null, mode: 'all', query: '', sortBy: 'name' };
 let pendingPhotos = [];
@@ -74,7 +73,6 @@ let scanStream = null;
 let scanRAF = null;
 let cal = { mode: 'log', year: new Date().getFullYear(), month: new Date().getMonth(), selected: null };
 let calJumpOpen = false;
-let labelNameMode = 'species';
 let infoExpanded = true;
 let qrExpanded = false;
 let logsExpanded = false;
@@ -98,16 +96,14 @@ const storage = {
 
 async function loadAll() {
   try { const r = await storage.get('plants-data'); plants = r ? JSON.parse(r.value) : []; } catch(e) { plants = []; }
-  try { const r = await storage.get('class-list'); if (r) classList = JSON.parse(r.value); } catch(e) {}
   try { const r = await storage.get('genus-list'); if (r) genusList = JSON.parse(r.value); } catch(e) {}
   try { const r = await storage.get('gdrive-last-sync'); if (r) gdriveLastSync = r.value; } catch(e) {}
   rebuildListsFromPlants();
   renumberAll();
-  await savePlants(); await saveClassList(); await saveGenusList();
+  await savePlants(); await saveGenusList();
   render();
 }
 async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} scheduleGdriveAutoBackup(); }
-async function saveClassList() { try { await storage.set('class-list', JSON.stringify(classList)); } catch(e){} }
 async function saveGenusList() { try { await storage.set('genus-list', JSON.stringify(genusList)); } catch(e){} }
 
 // --- Google Drive backup/restore (uses drive.file scope: app can only see files it created) ---
@@ -228,7 +224,7 @@ async function gdriveBackup() {
 
 // Shared upload logic used by both the manual button and the silent auto-backup.
 async function gdriveDoBackup() {
-  const payload = JSON.stringify({ plants, classList, genusList, savedAt: new Date().toISOString() });
+  const payload = JSON.stringify({ plants, genusList, savedAt: new Date().toISOString() });
   const existing = await gdriveFindBackupFile();
   if (existing) { await gdriveUpdateFile(existing.id, payload); }
   else { await gdriveCreateFile(payload); }
@@ -278,10 +274,9 @@ async function gdriveRestore(skipConfirm) {
     const text = await gdriveDownloadFile(existing.id);
     const data = JSON.parse(text);
     plants = data.plants || [];
-    classList = data.classList || [];
     genusList = data.genusList || [];
     await storage.set('plants-data', JSON.stringify(plants));
-    await saveClassList(); await saveGenusList();
+    await saveGenusList();
     gdriveLastSync = new Date().toISOString();
     await storage.set('gdrive-last-sync', gdriveLastSync);
     gdriveMessage = '復元が完了しました';
@@ -306,9 +301,8 @@ function purchaseLineText(p){
   return parts.join(' ');
 }
 function nameWithCommon(p){ return p.commonName ? p.name+' （'+p.commonName+'）' : p.name; }
-function labelDisplayName(p, mode){ if (mode === 'common' && p.commonName) return p.commonName; return p.name; }
-function titleLineText(p){ return [p.classification, p.genus, nameWithCommon(p)].filter(Boolean).join(' '); }
-function classGenusText(p){ return [p.classification, p.genus].filter(Boolean).join(' '); }
+function titleLineText(p){ return [p.genus, nameWithCommon(p)].filter(Boolean).join(' '); }
+function genusText(p){ return p.genus || ''; }
 function plantById(id){ return plants.find(x=>x.id===id); }
 function childrenOf(id){ return plants.filter(p=>p.parentId===id); }
 function sortJa(arr){ return arr.slice().sort((a,b)=>a.localeCompare(b,'ja')); }
@@ -317,7 +311,6 @@ function usedPurchaseLocations(){ const s=new Set(); plants.forEach(p=>{ if(p.pu
 function usedEventInfos(){ const s=new Set(); plants.forEach(p=>{ if(p.eventInfo) s.add(p.eventInfo); }); return Array.from(s); }
 function usedSpeciesNames(){ const s=new Set(); plants.forEach(p=>{ if(p.name) s.add(p.name); }); return Array.from(s); }
 function usedCommonNames(){ const s=new Set(); plants.forEach(p=>{ if(p.commonName) s.add(p.commonName); }); return Array.from(s); }
-function classificationUsageCount(name){ return plants.filter(p=>p.classification===name).length; }
 function genusUsageCount(name){ return plants.filter(p=>p.genus===name).length; }
 
 function eventsForMonth(year, month){
@@ -334,18 +327,21 @@ function hashHue(str){ let h=0; for(let i=0;i<str.length;i++){ h=(h*31+str.charC
 function tagColor(t){ const hue=hashHue(t); return { bg:'hsl('+hue+', 65%, 93%)', fg:'hsl('+hue+', 55%, 32%)' }; }
 function tagChipHtml(t, extra){ const c=tagColor(t); return '<span '+(extra||'')+' style="font-size:12px; background:'+c.bg+'; color:'+c.fg+'; padding:3px 8px; border-radius:10px; display:inline-block;">#'+escapeHtml(t)+'</span>'; }
 
-function formatManagementNumber(ci, gi, seq){ return pad(ci+1,2)+'-'+pad(gi+1,2)+'-'+pad(seq,3); }
-function genManagementNumber(classification, genus){
-  let ci=classList.indexOf(classification); if(ci<0) ci=classList.length;
-  let gi=genusList.indexOf(genus); if(gi<0) gi=genusList.length;
-  const seq=plants.filter(p=>p.classification===classification && p.genus===genus).length+1;
-  return formatManagementNumber(ci, gi, seq);
+// Genus code is simply its first letter (collisions between genera are fine —
+// the species name in the number itself keeps things distinguishable enough).
+function genusLetterCode(genus){
+  const ch = (genus||'').trim().charAt(0).toUpperCase();
+  return /[A-Z]/.test(ch) ? ch : 'X';
+}
+function formatManagementNumber(genus, speciesName, seq){
+  const gCode = genusLetterCode(genus);
+  return gCode+'.'+(speciesName||'')+'-'+pad(seq,3);
+}
+function genManagementNumber(genus, speciesName){
+  const seq=plants.filter(p=>p.genus===genus && p.name===speciesName).length+1;
+  return formatManagementNumber(genus, speciesName, seq);
 }
 function rebuildListsFromPlants(){
-  if (classList.length === 0) {
-    const seen = []; plants.forEach(p => { if (p.classification && !seen.includes(p.classification)) seen.push(p.classification); });
-    classList = seen;
-  }
   if (genusList.length === 0) {
     const seen = []; plants.forEach(p => { if (p.genus && !seen.includes(p.genus)) seen.push(p.genus); });
     genusList = seen;
@@ -354,22 +350,19 @@ function rebuildListsFromPlants(){
 function renumberAll(){
   const counts = {};
   plants.forEach(p => {
-    const key = p.classification+'|'+p.genus;
+    const key = p.genus+'|'+p.name;
     counts[key] = (counts[key]||0)+1;
-    const ci = classList.indexOf(p.classification);
-    const gi = genusList.indexOf(p.genus);
-    p.managementNumber = formatManagementNumber(ci<0?classList.length:ci, gi<0?genusList.length:gi, counts[key]);
+    p.managementNumber = formatManagementNumber(p.genus, p.name, counts[key]);
   });
 }
 
 function allTags(){ const s=new Set(); plants.forEach(p=>(p.hashtags||[]).forEach(t=>s.add(t))); return Array.from(s); }
-function usedClassifications(){ const s=new Set(); plants.forEach(p=>{ if(p.classification) s.add(p.classification); }); return Array.from(s); }
+function usedGenera(){ const s=new Set(); plants.forEach(p=>{ if(p.genus) s.add(p.genus); }); return Array.from(s); }
 function matchesQuery(p,q){
   if(!q) return true;
   const needle=q.toLowerCase().replace(/^#/,'');
   if(p.name.toLowerCase().includes(needle)) return true;
   if((p.commonName||'').toLowerCase().includes(needle)) return true;
-  if((p.classification||'').toLowerCase().includes(needle)) return true;
   if((p.genus||'').toLowerCase().includes(needle)) return true;
   if((p.managementNumber||'').toLowerCase().includes(needle)) return true;
   if((p.purchaseLocation||'').toLowerCase().includes(needle)) return true;
@@ -451,7 +444,7 @@ function plantCard(p) {
   if (thumb) html += '<img src="'+thumb+'" style="width:46px; height:46px; border-radius:12px; object-fit:cover; flex-shrink:0; align-self:flex-start;" />';
   else html += '<div style="width:46px; height:46px; border-radius:12px; background:var(--bg-success); display:flex; align-items:center; justify-content:center; flex-shrink:0; align-self:flex-start;"><i class="ti ti-plant" style="font-size:20px; color:var(--text-success);" aria-hidden="true"></i></div>';
   html += '<div style="flex:1; min-width:0;">';
-  html += '<p style="font-weight:500; font-size:15px; margin:0; overflow-wrap:break-word;">'+escapeHtml(classGenusText(p))+'<br>'+escapeHtml(nameWithCommon(p))+'</p>';
+  html += '<p style="font-weight:500; font-size:15px; margin:0; overflow-wrap:break-word;">'+escapeHtml(genusText(p))+'<br>'+escapeHtml(nameWithCommon(p))+'</p>';
   const purchaseLine = purchaseLineText(p);
   html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0; overflow-wrap:break-word;">'+escapeHtml(p.managementNumber)+'</p>';
   if (purchaseLine) html += '<p style="font-size:12px; color:var(--text-secondary); margin:2px 0 0; overflow-wrap:break-word;">'+escapeHtml(purchaseLine)+'</p>';
@@ -494,7 +487,7 @@ function renderList() {
   html += '<div style="display:flex; gap:6px; overflow-x:auto;">';
   html += pillBtn('all', 'すべて', view.mode === 'all');
   html += pillBtn('tag', 'タグ別', view.mode === 'tag');
-  html += pillBtn('class', '分類別', view.mode === 'class');
+  html += pillBtn('genus', '属別', view.mode === 'genus');
   html += '</div>';
   html += '<select id="sort-select" class="app-select" style="height:30px; font-size:12px; padding:0 6px; width:auto; flex-shrink:0; color:var(--text-secondary);">';
   html += '<option value="name" '+(view.sortBy==='name'?'selected':'')+'>名前順</option>';
@@ -521,14 +514,14 @@ function renderList() {
       if (isOpen) { html += '<div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">'; group.forEach(p => { html += plantCard(p); }); html += '</div>'; }
     });
     if (!any) html += emptyState('該当する植物がありません');
-  } else if (view.mode === 'class') {
-    const classes = sortJa(usedClassifications()); let any = false;
-    classes.forEach(c => {
-      const group = sortPlants(plants.filter(p => p.classification === c && matchesQuery(p, q)));
+  } else if (view.mode === 'genus') {
+    const genera = sortJa(usedGenera()); let any = false;
+    genera.forEach(g => {
+      const group = sortPlants(plants.filter(p => p.genus === g && matchesQuery(p, q)));
       if (group.length === 0) return; any = true;
-      const key = 'class:'+c;
+      const key = 'genus:'+g;
       const isOpen = expandedGroups.has(key);
-      html += groupHeaderHtml(key, escapeHtml(c), group.length, 'var(--bg-accent-muted)', 'var(--text-accent)', isOpen);
+      html += groupHeaderHtml(key, escapeHtml(g), group.length, 'var(--bg-accent-muted)', 'var(--text-accent)', isOpen);
       if (isOpen) { html += '<div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">'; group.forEach(p => { html += plantCard(p); }); html += '</div>'; }
     });
     if (!any) html += emptyState('該当する植物がありません');
@@ -555,12 +548,12 @@ function renderTaxonomyManage() {
   let html = '';
   html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
   html += '<button class="app-btn" id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
-  html += '<h3 style="margin:0; font-size:19px; font-weight:600;">科・属の管理</h3></div>';
+  html += '<h3 style="margin:0; font-size:19px; font-weight:600;">属の管理</h3></div>';
   html += '<p style="font-size:12px; color:var(--text-muted); margin:0 0 1.25rem; line-height:1.6;">誤字などは「編集」で直せます(同じ番号のまま名前だけ変わります)。削除は使われていない項目のみ可能です。</p>';
 
   html += '<div class="app-card" style="background:var(--surface-1); padding:10px 12px; margin-bottom:1.5rem;">';
-  html += '<p style="margin:0 0 8px; font-size:12px; color:var(--text-muted); line-height:1.6;">科・属を削除すると、その番号は欠番のまま残ります(印刷済みラベルの番号がズレないようにするためです)。欠番を詰めて振り直したい場合はこちら(全株の管理番号が変わります)。</p>';
-  html += '<button class="app-btn" id="taxonomy-reset-numbers-btn" style="width:100%; height:36px; font-size:12px;">欠番を詰めて管理番号を振り直す</button>';
+  html += '<p style="margin:0 0 8px; font-size:12px; color:var(--text-muted); line-height:1.6;">属の名前を編集した場合など、管理番号を今の状態に合わせて振り直せます(全株の番号が変わる可能性があります)。</p>';
+  html += '<button class="app-btn" id="taxonomy-reset-numbers-btn" style="width:100%; height:36px; font-size:12px;">管理番号を振り直す</button>';
   html += '</div>';
 
   function rowsHtml(list, kind, usageFn) {
@@ -602,9 +595,6 @@ function renderTaxonomyManage() {
     return h;
   }
 
-  html += '<p style="font-size:14px; font-weight:600; margin:0 0 10px;">科</p>';
-  html += rowsHtml(classList, 'class', classificationUsageCount);
-  html += '<p style="font-size:14px; font-weight:600; margin:0 0 10px;">属</p>';
   html += rowsHtml(genusList, 'genus', genusUsageCount);
 
   return html;
@@ -614,11 +604,10 @@ function bindTaxonomyEvents() {
   document.getElementById('back-btn').onclick = () => { taxonomyEditing = null; taxonomyDeleteConfirm = null; taxonomyEditError = null; view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
 
   document.getElementById('taxonomy-reset-numbers-btn').onclick = async () => {
-    if (!window.confirm('全ての株の管理番号を振り直します(欠番を詰めます)。すでに印刷したラベルの番号と合わなくなる場合があります。よろしいですか？')) return;
-    classList = classList.filter(Boolean);
+    if (!window.confirm('全ての株の管理番号を、今の属の名前に合わせて振り直します。すでに印刷したラベルの番号と合わなくなる場合があります。よろしいですか？')) return;
     genusList = genusList.filter(Boolean);
     renumberAll();
-    await saveClassList(); await saveGenusList(); await savePlants();
+    await saveGenusList(); await savePlants();
     render();
   };
 
@@ -635,19 +624,15 @@ function bindTaxonomyEvents() {
       const input = document.querySelector('.taxonomy-edit-input[data-kind="'+kind+'"][data-i="'+i+'"]');
       const newName = input.value.trim();
       if (!newName) return;
-      const list = kind === 'class' ? classList : genusList;
+      const list = genusList;
       const oldName = list[i];
       if (newName === oldName) { taxonomyEditing = null; taxonomyEditError = null; render(); return; }
       const dup = list.some((n, idx) => idx !== i && n === newName);
       if (dup) { taxonomyEditError = { kind, i, message: '「'+newName+'」は既に登録されています' }; render(); return; }
       list[i] = newName;
-      if (kind === 'class') {
-        await saveClassList();
-        plants.forEach(p => { if (p.classification === oldName) p.classification = newName; });
-      } else {
-        await saveGenusList();
-        plants.forEach(p => { if (p.genus === oldName) p.genus = newName; });
-      }
+      await saveGenusList();
+      plants.forEach(p => { if (p.genus === oldName) p.genus = newName; });
+      renumberAll();
       await savePlants();
       taxonomyEditing = null;
       taxonomyEditError = null;
@@ -663,10 +648,8 @@ function bindTaxonomyEvents() {
   });
   document.querySelectorAll('.taxonomy-delete-confirm').forEach(btn => {
     btn.onclick = async () => {
-      const kind = btn.dataset.kind;
       const i = Number(btn.dataset.i);
-      if (kind === 'class') { classList[i] = null; await saveClassList(); }
-      else { genusList[i] = null; await saveGenusList(); }
+      genusList[i] = null; await saveGenusList();
       taxonomyDeleteConfirm = null;
       render();
     };
@@ -998,9 +981,6 @@ function renderForm(editId) {
 
   html += '<p style="font-size:14px; font-weight:600; color:var(--text-primary); margin:1.25rem 0 10px;">分類</p>';
 
-  html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">科</label>';
-  html += comboInputHtml('f-class', p?p.classification:'');
-
   html += '<label style="font-size:13px; color:var(--text-secondary); display:block; margin-bottom:6px;">属</label>';
   html += comboInputHtml('f-genus', p?p.genus:'');
 
@@ -1068,7 +1048,6 @@ function bindTagPickerEvents() {
 
 function bindFormEvents(editId) {
   document.getElementById('back-btn').onclick = () => { view = { screen: editId?'detail':'list', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); };
-  bindCombo('f-class', sortJa(classList.filter(Boolean)));
   bindCombo('f-genus', sortJa(genusList.filter(Boolean)));
   bindCombo('f-name', sortJa(usedSpeciesNames()));
   bindCombo('f-common', sortJa(usedCommonNames()));
@@ -1084,11 +1063,9 @@ function bindFormEvents(editId) {
   document.getElementById('save-btn').onclick = async () => {
     const errEl = document.getElementById('f-error');
     const name = document.getElementById('f-name').value.trim();
-    const classification = document.getElementById('f-class').value.trim();
     const genus = document.getElementById('f-genus').value.trim();
-    if (!name || !classification || !genus) { errEl.textContent = '種・科・属は必須です'; errEl.style.display = 'block'; return; }
+    if (!name || !genus) { errEl.textContent = '種・属は必須です'; errEl.style.display = 'block'; return; }
     errEl.style.display = 'none';
-    if (!classList.includes(classification)) { classList.push(classification); await saveClassList(); }
     if (!genusList.includes(genus)) { genusList.push(genus); await saveGenusList(); }
     const commonName = document.getElementById('f-common').value.trim();
     const date = unsetCheckbox.checked ? null : (dateInput.value || null);
@@ -1099,16 +1076,16 @@ function bindFormEvents(editId) {
     const finalTags = window.__formTags.slice();
     if (editId) {
       const p = plants.find(x=>x.id===editId);
-      const classOrGenusChanged = p.classification!==classification || p.genus!==genus;
-      p.name=name; p.commonName=commonName; p.classification=classification; p.genus=genus; p.addedDate=date; p.notes=notes;
+      const numberRelevantChanged = p.genus !== genus || p.name !== name;
+      p.name=name; p.commonName=commonName; p.genus=genus; p.addedDate=date; p.notes=notes;
       p.purchaseLocation=purchaseLocation; p.eventInfo=eventInfo; p.parentId=parentId;
       p.hashtags = finalTags; p.photos = pendingPhotos.slice();
-      if (classOrGenusChanged) renumberAll();
+      if (numberRelevantChanged) renumberAll();
       await savePlants();
       view = { screen:'detail', plantId: editId, mode: view.mode, query: view.query, sortBy: view.sortBy };
     } else {
-      const managementNumber = genManagementNumber(classification, genus);
-      const newPlant = { id: uid(), name, commonName, classification, genus, managementNumber, addedDate: date, notes, purchaseLocation, eventInfo, parentId, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [], removedTagsLog: [] };
+      const managementNumber = genManagementNumber(genus, name);
+      const newPlant = { id: uid(), name, commonName, genus, managementNumber, addedDate: date, notes, purchaseLocation, eventInfo, parentId, hashtags: finalTags, photos: pendingPhotos.slice(), logs: [], removedTagsLog: [] };
       plants.push(newPlant);
       await savePlants();
       view = { screen:'detail', plantId: newPlant.id, mode: view.mode, query: view.query, sortBy: view.sortBy };
@@ -1120,7 +1097,6 @@ function bindFormEvents(editId) {
 function renderDetail(id) {
   const p = plants.find(x=>x.id===id);
   if (!p) { view = { screen:'list', plantId:null, mode:'all', query:'', sortBy:'name' }; return renderList(); }
-  labelNameMode = (p.commonName ? labelNameMode : 'species');
   const removedTagsLog = p.removedTagsLog || [];
   let html = '';
   html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
@@ -1228,14 +1204,8 @@ function renderDetail(id) {
     html += '<div style="padding:0 1rem 1.25rem; display:flex; flex-direction:column; align-items:center; gap:10px;">';
     html += '<div id="qr-code"></div>';
     html += '<p style="font-size:12px; color:var(--text-muted); margin:0;">'+escapeHtml(p.managementNumber)+'</p>';
-    if (p.commonName) {
-      html += '<div style="display:flex; gap:6px;">';
-      html += pillBtn('lbl-species', '種', labelNameMode==='species');
-      html += pillBtn('lbl-common', '和名', labelNameMode==='common');
-      html += '</div>';
-    }
     html += '<button class="app-btn" id="label-download-btn" style="width:100%; height:38px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px; background:var(--fill-primary); color:var(--on-primary); border:none;"><i class="ti ti-download" style="font-size:15px;" aria-hidden="true"></i>ラベル画像</button>';
-    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、黒デザイン・透明背景・左揃えで属、種名(または和名)+管理番号の2行を印刷できます</p>';
+    html += '<p style="font-size:11px; color:var(--text-muted); margin:0; text-align:center;">50mm幅テープに、黒デザイン・透明背景・左揃えで属、管理番号(属コード.種名-枝番号)の2行を印刷できます</p>';
     html += '</div>';
   }
   html += '</div>';
@@ -1332,11 +1302,6 @@ function bindDetailEvents() {
 
   if (!qrExpanded) return;
 
-  const speciesBtn = document.querySelector('[data-key="lbl-species"]');
-  const commonBtn = document.querySelector('[data-key="lbl-common"]');
-  if (speciesBtn) speciesBtn.onclick = () => { labelNameMode = 'species'; render(); };
-  if (commonBtn) commonBtn.onclick = () => { labelNameMode = 'common'; render(); };
-
   new QRCode(document.getElementById('qr-code'), { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: 120, height: 120 });
 
   document.getElementById('label-download-btn').onclick = () => {
@@ -1372,8 +1337,7 @@ function bindDetailEvents() {
     const labelFont = "700 36px 'Avenir Next', Futura, 'Century Gothic', -apple-system, sans-serif";
     ctx.font = labelFont;
     const cgText = truncateToFit(p.genus || '', textAreaWidth);
-    const nameMnCombined = labelDisplayName(p, labelNameMode)+'　'+p.managementNumber;
-    const nameText = truncateToFit(nameMnCombined, textAreaWidth);
+    const nameText = truncateToFit(p.managementNumber || '', textAreaWidth);
 
     // Generate a separate black QR code on transparent background for the printed label
     // (this "white ink on clear tape" printer app expects black design and converts it to white ink automatically)
