@@ -1156,58 +1156,53 @@ function renderDetail(id) {
   html += '</div>';
 
   const logsAll = p.logs || [];
-  const logs = logsAll.slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const timelinePhotos = [];
-  logsAll.slice().sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(l => { (l.photos||[]).forEach(src => timelinePhotos.push({ src, date: l.date, note: l.note || '', logId: l.id })); });
-  window.__timelinePhotos = timelinePhotos;
+  const timelineItems = logsAll.slice().sort((a,b)=>new Date(a.date)-new Date(b.date));
+  window.__timelineItems = timelineItems;
 
   html += '<div class="app-card" style="background:var(--surface-1); margin-bottom:1rem; overflow:hidden;">';
   html += '<div style="display:flex; align-items:center; justify-content:space-between; padding:0 0.5rem 0 1rem; height:48px;">';
   html += '<button class="app-btn" id="logs-toggle-btn" style="flex:1; background:transparent; border:none; height:48px; display:flex; align-items:center; gap:8px; font-size:14px; font-weight:500; text-align:left;">';
-  html += '<i class="ti ti-timeline" style="font-size:17px;" aria-hidden="true"></i>成長記録 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">('+logs.length+')</span>';
+  html += '<i class="ti ti-timeline" style="font-size:17px;" aria-hidden="true"></i>成長記録 <span style="font-weight:400; color:var(--text-muted); font-size:12px;">('+timelineItems.length+')</span>';
   html += '<i class="ti ti-chevron-down" style="font-size:16px; color:var(--text-muted); margin-left:auto; transform:rotate('+(logsExpanded?'180':'0')+'deg); transition:transform 0.15s;" aria-hidden="true"></i>';
   html += '</button>';
   html += '<button class="app-btn" id="log-add-btn" style="height:32px; padding:0 12px; display:flex; align-items:center; gap:4px; font-size:13px; flex-shrink:0; margin-left:8px;"><i class="ti ti-plus" style="font-size:15px;" aria-hidden="true"></i>記録</button>';
   html += '</div>';
   if (logsExpanded) {
     html += '<div style="padding:0 1rem 1.25rem;">';
-    if (timelinePhotos.length > 0) {
+    if (timelineItems.length === 0) html += '<p style="font-size:13px; color:var(--text-muted); text-align:center; padding:1.5rem 0;">まだ記録がありません</p>';
+    else {
       html += '<p style="margin:0 0 8px; font-size:13px; font-weight:600; color:var(--text-secondary);">成長タイムライン</p>';
       html += '<div style="display:flex; gap:8px; overflow-x:auto; margin-bottom:8px; padding-bottom:4px;">';
-      timelinePhotos.forEach((tp, i) => {
+      timelineItems.forEach((l, i) => {
         const isSel = timelineViewerIndex === i;
-        html += '<div class="timeline-thumb" data-idx="'+i+'" style="flex-shrink:0; text-align:center; cursor:pointer;"><img src="'+tp.src+'" style="width:76px; height:76px; object-fit:cover; border-radius:12px; '+(isSel?'outline:2px solid var(--border-accent, #2e7d4f); outline-offset:2px;':'')+'" /><p style="font-size:10px; color:var(--text-muted); margin:4px 0 0;">'+fmtDate(tp.date)+'</p></div>';
+        const thumb = (l.photos||[])[0];
+        const outline = isSel ? 'outline:2px solid var(--border-accent, #2e7d4f); outline-offset:2px;' : '';
+        html += '<div class="timeline-thumb" data-idx="'+i+'" style="flex-shrink:0; text-align:center; cursor:pointer;">';
+        if (thumb) {
+          html += '<img src="'+thumb+'" style="width:76px; height:76px; object-fit:cover; border-radius:12px; '+outline+'" />';
+        } else {
+          html += '<div style="width:76px; height:76px; border-radius:12px; background:var(--surface-2); display:flex; align-items:center; justify-content:center; '+outline+'"><i class="ti ti-note" style="font-size:22px; color:var(--text-muted);" aria-hidden="true"></i></div>';
+        }
+        html += '<p style="font-size:10px; color:var(--text-muted); margin:4px 0 0;">'+fmtDate(l.date)+'</p></div>';
       });
       html += '</div>';
-      if (timelineViewerIndex !== null && timelinePhotos[timelineViewerIndex]) {
-        const tp = timelinePhotos[timelineViewerIndex];
-        html += '<div style="background:var(--surface-2); border-radius:12px; padding:10px 12px; margin-bottom:1.25rem;">';
+      if (timelineViewerIndex !== null && timelineItems[timelineViewerIndex]) {
+        const l = timelineItems[timelineViewerIndex];
+        html += '<div style="background:var(--surface-2); border-radius:12px; padding:10px 12px;">';
         html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
-        html += '<span style="font-size:12px; color:var(--text-secondary);">'+escapeHtml(fmtDate(tp.date))+'</span>';
+        html += '<span style="font-size:12px; color:var(--text-secondary);">'+escapeHtml(fmtDate(l.date))+'</span>';
         html += '<div style="display:flex; gap:6px;">';
         html += '<button class="app-btn" id="timeline-detail-delete" style="width:26px; height:26px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-trash" style="font-size:14px; color:var(--text-danger);" aria-hidden="true"></i></button>';
         html += '<button class="app-btn" id="timeline-detail-close" style="width:26px; height:26px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>';
         html += '</div></div>';
-        html += '<img src="'+tp.src+'" style="width:100%; max-height:220px; border-radius:10px; display:block; margin-bottom:8px; object-fit:cover;" />';
-        html += tp.note ? '<p style="margin:0; font-size:13px; line-height:1.6; overflow-wrap:break-word;">'+escapeHtml(tp.note)+'</p>' : '<p style="margin:0; font-size:13px; color:var(--text-muted);">メモはありません</p>';
-        html += '</div>';
-      }
-    }
-    if (logs.length === 0) html += '<p style="font-size:13px; color:var(--text-muted); text-align:center; padding:1.5rem 0;">まだ記録がありません</p>';
-    else {
-      html += '<div style="display:flex; flex-direction:column; gap:8px;">';
-      logs.forEach(l => {
-        html += '<div style="background:var(--surface-2); border-radius:12px; padding:10px 12px;">';
-        html += '<div style="display:flex; justify-content:space-between; align-items:baseline;"><span style="font-size:12px; color:var(--text-secondary);">'+fmtDate(l.date)+'</span><button class="app-btn log-delete-btn" data-log-id="'+escapeHtml(l.id)+'" style="width:26px; height:26px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-trash" style="font-size:14px; color:var(--text-danger);" aria-hidden="true"></i></button></div>';
         if ((l.photos||[]).length) {
-          html += '<div style="display:flex; gap:6px; overflow-x:auto; margin:6px 0;">';
-          l.photos.forEach(src => { html += '<img src="'+src+'" style="width:64px; height:64px; object-fit:cover; border-radius:10px; flex-shrink:0;" />'; });
+          html += '<div style="display:flex; gap:6px; overflow-x:auto; margin-bottom:8px;">';
+          l.photos.forEach(src => { html += '<img src="'+src+'" style="width:100px; height:100px; object-fit:cover; border-radius:10px; flex-shrink:0;" />'; });
           html += '</div>';
         }
-        if (l.note) html += '<p style="margin:4px 0 0; font-size:13px; line-height:1.5; overflow-wrap:break-word;">'+escapeHtml(l.note)+'</p>';
+        html += l.note ? '<p style="margin:0; font-size:13px; line-height:1.6; overflow-wrap:break-word;">'+escapeHtml(l.note)+'</p>' : '<p style="margin:0; font-size:13px; color:var(--text-muted);">メモはありません</p>';
         html += '</div>';
-      });
-      html += '</div>';
+      }
     }
     html += '</div>';
   }
@@ -1266,22 +1261,13 @@ function bindDetailEvents() {
       render();
     };
   });
-  document.querySelectorAll('.log-delete-btn').forEach(el => {
-    el.onclick = async () => {
-      if (!window.confirm('この成長記録を削除します。よろしいですか？')) return;
-      p.logs = (p.logs||[]).filter(l => l.id !== el.dataset.logId);
-      timelineViewerIndex = null;
-      await savePlants();
-      render();
-    };
-  });
   const timelineDetailClose = document.getElementById('timeline-detail-close');
   if (timelineDetailClose) {
     timelineDetailClose.onclick = () => { timelineViewerIndex = null; render(); };
     document.getElementById('timeline-detail-delete').onclick = async () => {
       if (!window.confirm('この成長記録を削除します。よろしいですか？')) return;
-      const tp = (window.__timelinePhotos||[])[timelineViewerIndex];
-      if (tp) p.logs = (p.logs||[]).filter(l => l.id !== tp.logId);
+      const l = (window.__timelineItems||[])[timelineViewerIndex];
+      if (l) p.logs = (p.logs||[]).filter(x => x.id !== l.id);
       timelineViewerIndex = null;
       await savePlants();
       render();
