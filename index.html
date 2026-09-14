@@ -338,7 +338,7 @@ function formatManagementNumber(genus, speciesName, seq){
   return gCode+'.'+(speciesName||'')+'-'+pad(seq,3);
 }
 function genManagementNumber(genus, speciesName){
-  const seq=plants.filter(p=>p.genus===genus && p.name===speciesName).length+1;
+  const seq=plants.filter(p=>p.genus===genus).length+1;
   return formatManagementNumber(genus, speciesName, seq);
 }
 function rebuildListsFromPlants(){
@@ -350,9 +350,8 @@ function rebuildListsFromPlants(){
 function renumberAll(){
   const counts = {};
   plants.forEach(p => {
-    const key = p.genus+'|'+p.name;
-    counts[key] = (counts[key]||0)+1;
-    p.managementNumber = formatManagementNumber(p.genus, p.name, counts[key]);
+    counts[p.genus] = (counts[p.genus]||0)+1;
+    p.managementNumber = formatManagementNumber(p.genus, p.name, counts[p.genus]);
   });
 }
 
