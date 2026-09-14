@@ -1188,19 +1188,25 @@ function renderDetail(id) {
       html += '</div>';
       if (timelineViewerIndex !== null && timelineItems[timelineViewerIndex]) {
         const l = timelineItems[timelineViewerIndex];
+        const photos = l.photos || [];
         html += '<div style="background:var(--surface-2); border-radius:12px; padding:10px 12px;">';
-        html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">';
-        html += '<span style="font-size:12px; color:var(--text-secondary);">'+escapeHtml(fmtDate(l.date))+'</span>';
-        html += '<div style="display:flex; gap:6px;">';
+        html += '<div style="display:flex; justify-content:flex-end; gap:6px; margin-bottom:8px;">';
         html += '<button class="app-btn" id="timeline-detail-delete" style="width:26px; height:26px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-trash" style="font-size:14px; color:var(--text-danger);" aria-hidden="true"></i></button>';
         html += '<button class="app-btn" id="timeline-detail-close" style="width:26px; height:26px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-x" style="font-size:15px;" aria-hidden="true"></i></button>';
-        html += '</div></div>';
-        if ((l.photos||[]).length) {
-          html += '<div style="display:flex; gap:6px; overflow-x:auto; margin-bottom:8px;">';
-          l.photos.forEach(src => { html += '<img src="'+src+'" style="width:100px; height:100px; object-fit:cover; border-radius:10px; flex-shrink:0;" />'; });
+        html += '</div>';
+        html += '<div style="display:flex; gap:10px; align-items:flex-start;">';
+        if (photos.length) {
+          html += '<div style="flex-shrink:0; display:flex; flex-direction:column; gap:6px;">';
+          photos.forEach(src => { html += '<img src="'+src+'" style="width:96px; height:96px; object-fit:cover; border-radius:10px;" />'; });
           html += '</div>';
+        } else {
+          html += '<div style="flex-shrink:0; width:96px; height:96px; border-radius:10px; background:var(--surface-1); display:flex; align-items:center; justify-content:center;"><i class="ti ti-note" style="font-size:26px; color:var(--text-muted);" aria-hidden="true"></i></div>';
         }
+        html += '<div style="flex:1; min-width:0; border:0.5px solid var(--border); border-radius:10px; padding:8px 10px;">';
+        html += '<p style="margin:0 0 6px; font-size:12px; color:var(--text-secondary); font-weight:600;">'+escapeHtml(fmtDate(l.date))+'</p>';
         html += l.note ? '<p style="margin:0; font-size:13px; line-height:1.6; overflow-wrap:break-word;">'+escapeHtml(l.note)+'</p>' : '<p style="margin:0; font-size:13px; color:var(--text-muted);">メモはありません</p>';
+        html += '</div>';
+        html += '</div>';
         html += '</div>';
       }
     }
