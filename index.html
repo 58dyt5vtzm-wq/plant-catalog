@@ -424,6 +424,7 @@ function render() {
   else if (view.screen === 'calendar') { app.innerHTML = renderCalendar(); bindCalendarEvents(); }
   else if (view.screen === 'taxonomy') { app.innerHTML = renderTaxonomyManage(); bindTaxonomyEvents(); }
   else if (view.screen === 'backup') { app.innerHTML = renderBackup(); bindBackupEvents(); }
+  else if (view.screen === 'help') { app.innerHTML = renderHelp(); bindHelpEvents(); }
 }
 
 function pillBtn(key, label, active) {
@@ -549,6 +550,9 @@ function renderTaxonomyManage() {
   html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
   html += '<button class="app-btn" id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<h3 style="margin:0; font-size:19px; font-weight:600;">属の管理</h3></div>';
+
+  html += '<button class="app-btn" id="help-btn" style="width:100%; height:38px; font-size:13px; margin-bottom:1.25rem; display:flex; align-items:center; justify-content:center; gap:6px;"><i class="ti ti-help-circle" style="font-size:16px;" aria-hidden="true"></i>使い方(管理番号・ラベル・記録・バックアップ)</button>';
+
   html += '<p style="font-size:12px; color:var(--text-muted); margin:0 0 1.25rem; line-height:1.6;">誤字などは「編集」で直せます(同じ番号のまま名前だけ変わります)。削除は使われていない項目のみ可能です。</p>';
 
   html += '<div class="app-card" style="background:var(--surface-1); padding:10px 12px; margin-bottom:1.5rem;">';
@@ -603,6 +607,8 @@ function renderTaxonomyManage() {
 function bindTaxonomyEvents() {
   document.getElementById('back-btn').onclick = () => { taxonomyEditing = null; taxonomyDeleteConfirm = null; taxonomyEditError = null; view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
 
+  document.getElementById('help-btn').onclick = () => { view = { screen:'help', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
+
   document.getElementById('taxonomy-reset-numbers-btn').onclick = async () => {
     if (!window.confirm('全ての株の管理番号を、今の属の名前に合わせて振り直します。すでに印刷したラベルの番号と合わなくなる場合があります。よろしいですか？')) return;
     genusList = genusList.filter(Boolean);
@@ -654,6 +660,47 @@ function bindTaxonomyEvents() {
       render();
     };
   });
+}
+
+function helpSection(title, iconClass, bodyHtml){
+  let h = '<div class="app-card" style="background:var(--surface-1); padding:12px 14px; margin-bottom:1rem;">';
+  h += '<p style="margin:0 0 6px; font-size:14px; font-weight:600; display:flex; align-items:center; gap:6px;"><i class="ti '+iconClass+'" aria-hidden="true"></i>'+title+'</p>';
+  h += '<div style="font-size:13px; color:var(--text-secondary); line-height:1.7;">'+bodyHtml+'</div>';
+  h += '</div>';
+  return h;
+}
+function renderHelp() {
+  let html = '';
+  html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:1rem;">';
+  html += '<button class="app-btn" id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
+  html += '<h3 style="margin:0; font-size:19px; font-weight:600;">使い方</h3></div>';
+
+  html += helpSection('管理番号のルール', 'ti-hash',
+    '形式は「属コード.種名-枝番号」です(例:<b>G.Vatteri-001</b>)。<br>' +
+    '・属コード:属名の頭文字1文字(同じ頭文字の属があっても気にせずそのまま使います)<br>' +
+    '・種名:登録した種名をそのまま使用<br>' +
+    '・枝番号:同じ属の中での登録順の通し番号(種が違っても属が同じなら続き番号になります)<br>' +
+    '属名や種名を編集すると自動で振り直りますが、「属の管理」画面の「管理番号を振り直す」でいつでも手動でも実行できます。');
+
+  html += helpSection('ラベル印刷', 'ti-tag',
+    '詳細画面の「QRコード」を開くと「ラベル画像」ボタンがあります。50mm幅テープ用の画像(黒デザイン・透明背景・左揃え・游ゴシック)がダウンロードされます。<br>' +
+    '・1行目:管理番号(大きめの文字)<br>' +
+    '・2行目:購入日+購入場所(小さめの文字)');
+
+  html += helpSection('成長記録(タイムライン)', 'ti-timeline',
+    '詳細画面の「成長記録」から「+記録」で、日付・写真・メモを登録できます(写真かメモのどちらか一方でもOK)。<br>' +
+    'タイムラインのチップ(写真、または写真がない場合はノートのアイコン)をタップすると、その記録の写真とメモが下に展開されます。もう一度タップするか×で閉じます。ゴミ箱アイコンでその記録を削除できます(削除の履歴は残りません)。');
+
+  html += helpSection('属の管理', 'ti-list',
+    '一覧画面の歯車アイコンから開けます。属名の編集(全株の管理番号に反映)や、使われていない属の削除ができます。');
+
+  html += helpSection('Googleドライブ連携', 'ti-cloud',
+    '一覧画面の雲アイコンから「接続」すると、変更のたびに自動でバックアップされます(裏で静かに動作、通知なし)。ただし接続はタブを閉じると切れるため、次にアプリを開いたときは再度「接続」を押す必要があります(ブラウザの安全上の制限のため)。別の端末で同じアカウントに接続すると、新しいバックアップがあれば復元するか確認されます。');
+
+  return html;
+}
+function bindHelpEvents() {
+  document.getElementById('back-btn').onclick = () => { view = { screen:'taxonomy', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
 }
 
 function renderBackup() {
