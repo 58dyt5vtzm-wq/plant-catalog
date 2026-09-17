@@ -591,25 +591,52 @@ function bindPhotoBrowseEvents() {
   const track = document.getElementById('pb-track');
   if (!wrap || !track) return;
   const total = Number(wrap.dataset.total) || 1;
-  let startX = 0, dx = 0, dragging = false, moved = false;
+  let startX = 0, dx = 0, dragging = false, moved = false, settling = false;
+  let samples = []; // recent {x,t} for velocity
 
-  const onDown = (clientX) => { dragging = true; moved = false; dx = 0; startX = clientX; track.style.transition = 'none'; };
+  const onDown = (clientX) => {
+    if (settling) return;
+    dragging = true; moved = false; dx = 0; startX = clientX;
+    samples = [{ x: clientX, t: performance.now() }];
+    track.style.transition = 'none';
+  };
   const onMove = (clientX) => {
     if (!dragging) return;
     dx = clientX - startX;
     if (Math.abs(dx) > 4) moved = true;
     track.style.transform = 'translateX('+dx+'px)';
+    samples.push({ x: clientX, t: performance.now() });
+    if (samples.length > 6) samples.shift();
   };
   const onUp = () => {
     if (!dragging) return;
     dragging = false;
-    const steps = -Math.round(dx / PHOTO_BROWSE_SPACING);
-    track.style.transition = 'transform 0.2s';
-    track.style.transform = 'translateX(0)';
-    if (steps !== 0) {
-      photoBrowseIndex = ((photoBrowseIndex + steps) % total + total) % total;
-      render();
+    // velocity from the last ~80ms of movement, so a quick flick carries momentum
+    let velocity = 0;
+    if (samples.length >= 2) {
+      const last = samples[samples.length-1];
+      const ref = samples.find(s => last.t - s.t <= 80) || samples[0];
+      const dt = last.t - ref.t;
+      if (dt > 0) velocity = (last.x - ref.x) / dt; // px/ms
     }
+    const projected = dx + velocity * 90; // project a bit further for a flick
+    const steps = -Math.round(projected / PHOTO_BROWSE_SPACING);
+    settling = true;
+    track.style.transition = 'transform 0.32s cubic-bezier(0.22, 1, 0.36, 1)';
+    track.style.transform = 'translateX(0)';
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      track.removeEventListener('transitionend', finish);
+      settling = false;
+      if (steps !== 0) {
+        photoBrowseIndex = ((photoBrowseIndex + steps) % total + total) % total;
+        render();
+      }
+    };
+    track.addEventListener('transitionend', finish);
+    setTimeout(finish, 360); // fallback in case transitionend doesn't fire
   };
 
   wrap.onpointerdown = (e) => onDown(e.clientX);
