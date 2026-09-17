@@ -103,6 +103,11 @@ async function loadAll() {
   rebuildListsFromPlants();
   renumberAll();
   await savePlants(); await saveGenusList();
+  const hashMatch = location.hash.match(/[#&]p=([A-Za-z0-9_-]+)/);
+  if (hashMatch) {
+    const target = plants.find(p => p.id === decodeURIComponent(hashMatch[1]));
+    if (target) view = { screen:'detail', plantId: target.id, mode:'all', query:'', sortBy:'name' };
+  }
   render();
 }
 async function savePlants() { try { await storage.set('plants-data', JSON.stringify(plants)); } catch(e){} scheduleGdriveAutoBackup(); }
@@ -838,6 +843,9 @@ function renderHelp() {
     '・枝番号:同じ属の中での登録順の通し番号(種が違っても属が同じなら続き番号になります)<br>' +
     '属名や種名を編集すると自動で振り直りますが、「属の管理」画面の「管理番号を振り直す」でいつでも手動でも実行できます。');
 
+  html += helpSection('QRコード', 'ti-qrcode',
+    '詳細画面の「QRコード」に表示されるものは、そのままスマホ純正のカメラアプリでも読み取れます。読み取って出てきたリンクをタップすると、そのままこのアプリのその株の詳細画面が開きます(このアプリを開いたことがある同じ端末・同じブラウザである必要があります)。アプリ内の右上のQRアイコンからのスキャンも引き続き使えます。');
+
   html += helpSection('ラベル印刷', 'ti-tag',
     '詳細画面の「QRコード」を開くと「ラベル画像」ボタンがあります。50mm幅テープ用の画像(黒デザイン・透明背景・左揃え・游ゴシック)がダウンロードされます。<br>' +
     '・1行目:管理番号(大きめの文字)<br>' +
@@ -852,6 +860,8 @@ function renderHelp() {
 
   html += helpSection('Googleドライブ連携', 'ti-cloud',
     '一覧画面の雲アイコンから「接続」すると、変更のたびに自動でバックアップされます(裏で静かに動作、通知なし)。ただし接続はタブを閉じると切れるため、次にアプリを開いたときは再度「接続」を押す必要があります(ブラウザの安全上の制限のため)。別の端末で同じアカウントに接続すると、新しいバックアップがあれば復元するか確認されます。');
+
+  html += '<a href="https://github.com/58dyt5vtzm-wq/plant-catalog" target="_blank" rel="noopener" class="app-btn" style="width:100%; height:40px; font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px; text-decoration:none; box-sizing:border-box;"><i class="ti ti-brand-github" style="font-size:16px;" aria-hidden="true"></i>GitHubでソースコードを見る</a>';
 
   return html;
 }
@@ -1054,7 +1064,13 @@ function stopScan() {
   if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
 }
 
+function plantDeepLink(p) {
+  const base = location.href.split('#')[0];
+  return base + '#p=' + encodeURIComponent(p.id);
+}
 function findPlantFromScanText(text) {
+  const hashMatch = text.match(/[#?&]p=([A-Za-z0-9_-]+)/);
+  if (hashMatch) { const found = plants.find(p => p.id === decodeURIComponent(hashMatch[1])); if (found) return found; }
   const idMatch = text.match(/ID:([A-Za-z0-9]+)/);
   if (idMatch) { const found = plants.find(p => p.id === idMatch[1]); if (found) return found; }
   return plants.find(p => text.includes(p.managementNumber)) || null;
@@ -1097,9 +1113,9 @@ async function bindScanEvents() {
 }
 
 function comboInputHtml(id, selectedVal) {
-  return '<div style="position:relative; margin-bottom:1rem;">' +
+  return '<div style="margin-bottom:1rem;">' +
     '<input id="'+id+'" type="text" class="app-input" value="'+escapeHtml(selectedVal||'')+'" autocomplete="off" style="width:100%;" />' +
-    '<div id="'+id+'-dropdown" style="display:none; position:absolute; z-index:30; top:calc(100% + 4px); left:0; right:0; background:var(--surface-2); border:0.5px solid var(--border); border-radius:12px; max-height:180px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>' +
+    '<div id="'+id+'-dropdown" style="display:none; margin-top:4px; background:var(--surface-2); border:0.5px solid var(--border); border-radius:12px; max-height:180px; overflow-y:auto;"></div>' +
     '</div>';
 }
 
@@ -1541,7 +1557,7 @@ function bindDetailEvents() {
 
   if (!qrExpanded) return;
 
-  new QRCode(document.getElementById('qr-code'), { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: 120, height: 120 });
+  new QRCode(document.getElementById('qr-code'), { text: plantDeepLink(p), width: 120, height: 120 });
 
   document.getElementById('label-download-btn').onclick = () => {
     const scale = 10; // px per mm
@@ -1587,7 +1603,7 @@ function bindDetailEvents() {
     qrTemp.style.position = 'fixed';
     qrTemp.style.left = '-9999px';
     document.body.appendChild(qrTemp);
-    new QRCode(qrTemp, { text: 'ID:'+p.id+'|'+p.managementNumber+' '+p.name, width: qrSize, height: qrSize, colorDark: '#000000', colorLight: 'rgba(0,0,0,0)' });
+    new QRCode(qrTemp, { text: plantDeepLink(p), width: qrSize, height: qrSize, colorDark: '#000000', colorLight: 'rgba(0,0,0,0)' });
 
     const draw = () => {
       const qrImg = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
