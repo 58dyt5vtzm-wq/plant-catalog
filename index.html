@@ -460,11 +460,11 @@ function plantCard(p) {
 // center) mapped circularly onto the browsable list, so it wraps infinitely in both
 // directions. The track div (#pb-track) is dragged as one rigid block in bindListEvents;
 // on release the drag distance is converted into a step count and this is re-rendered.
-const PHOTO_BROWSE_SPACING = 46;
+const PHOTO_BROWSE_SPACING = 34;
 function photoBrowseHtml(list, centerIdx) {
   const n = list.length;
   let html = '<p style="font-size:12px; color:var(--text-secondary); margin:0 0 10px;">写真から探す</p>';
-  html += '<div id="pb-wrap" style="position:relative; height:130px; overflow:hidden; margin:0 -1rem 6px; touch-action:pan-y; cursor:grab;">';
+  html += '<div id="pb-wrap" style="position:relative; height:114px; overflow:hidden; margin:0 0 6px; touch-action:pan-y; cursor:grab;">';
   html += '<div id="pb-track" style="position:relative; width:100%; height:100%;">';
   list.forEach((p, idx) => {
     html += '<div class="pb-card" data-idx="'+idx+'" style="position:absolute; left:50%; top:50%; border-radius:14px; overflow:hidden; opacity:0; cursor:pointer;">';
@@ -607,7 +607,7 @@ function bindPhotoBrowseEvents() {
       const dist = circDist(i, centerPos);
       const ad = Math.abs(dist);
       if (ad > 3.6) { el.style.opacity = '0'; return; }
-      const size = Math.max(40, 96 - ad * 18);
+      const size = Math.max(34, 82 - ad * 15);
       const h = size * 1.35;
       el.style.width = size + 'px';
       el.style.height = h + 'px';
