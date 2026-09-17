@@ -416,6 +416,7 @@ function monthSummary(year, month){
 function render() {
   const app = document.getElementById('app');
   stopScan();
+  if (window.__pbStop) { window.__pbStop(); window.__pbStop = null; }
   if (view.screen === 'list') { app.innerHTML = renderList(); bindListEvents(); }
   else if (view.screen === 'add') { app.innerHTML = renderForm(null); bindFormEvents(null); }
   else if (view.screen === 'edit') { app.innerHTML = renderForm(view.plantId); bindFormEvents(view.plantId); }
@@ -462,25 +463,17 @@ function plantCard(p) {
 const PHOTO_BROWSE_SPACING = 46;
 function photoBrowseHtml(list, centerIdx) {
   const n = list.length;
-  const offs = [-3,-2,-1,0,1,2,3];
-  const sizes = { 0:96, 1:72, 2:56, 3:44 };
   let html = '<p style="font-size:12px; color:var(--text-secondary); margin:0 0 10px;">写真から探す</p>';
-  html += '<div id="pb-wrap" data-total="'+n+'" style="position:relative; height:130px; display:flex; align-items:center; justify-content:center; overflow:hidden; margin:0 -1rem 6px; touch-action:pan-y;">';
+  html += '<div id="pb-wrap" style="position:relative; height:130px; overflow:hidden; margin:0 -1rem 6px; touch-action:pan-y; cursor:grab;">';
   html += '<div id="pb-track" style="position:relative; width:100%; height:100%;">';
-  offs.forEach(off => {
-    const idx = ((centerIdx + off) % n + n) % n;
-    const p = list[idx];
-    const size = sizes[Math.abs(off)];
-    const opacity = off === 0 ? 1 : (1 - Math.abs(off) * 0.22);
-    const border = off === 0 ? 'border:2px solid var(--border-accent);' : '';
-    const shadow = off === 0 ? 'box-shadow:var(--shadow-md);' : '';
-    html += '<div class="pb-card" data-off="'+off+'" data-idx="'+idx+'" style="position:absolute; left:50%; top:50%; width:'+size+'px; height:'+(size*1.35)+'px; margin-left:'+(-size/2)+'px; margin-top:'+(-size*1.35/2)+'px; transform:translateX('+(off*PHOTO_BROWSE_SPACING)+'px); border-radius:'+(size>60?14:10)+'px; overflow:hidden; opacity:'+opacity+'; z-index:'+(10-Math.abs(off))+'; '+border+shadow+' cursor:pointer;">';
+  list.forEach((p, idx) => {
+    html += '<div class="pb-card" data-idx="'+idx+'" style="position:absolute; left:50%; top:50%; border-radius:14px; overflow:hidden; opacity:0; cursor:pointer;">';
     html += '<img src="'+p.photos[0]+'" style="width:100%; height:100%; object-fit:cover; display:block; pointer-events:none;" />';
     html += '</div>';
   });
   html += '</div></div>';
   const center = list[centerIdx];
-  html += '<p style="font-size:13px; font-weight:500; text-align:center; margin:0 0 16px; overflow-wrap:break-word;">'+escapeHtml(genusText(center))+' '+escapeHtml(center.name)+'</p>';
+  html += '<p id="pb-name" style="font-size:13px; font-weight:500; text-align:center; margin:0 0 16px; overflow-wrap:break-word;">'+escapeHtml(genusText(center))+' '+escapeHtml(center.name)+'</p>';
   return html;
 }
 
@@ -589,76 +582,123 @@ function bindListEvents() {
 function bindPhotoBrowseEvents() {
   const wrap = document.getElementById('pb-wrap');
   const track = document.getElementById('pb-track');
-  if (!wrap || !track) return;
-  const total = Number(wrap.dataset.total) || 1;
-  let startX = 0, dx = 0, dragging = false, moved = false, settling = false;
-  let samples = []; // recent {x,t} for velocity
+  const nameEl = document.getElementById('pb-name');
+  const cards = Array.from(document.querySelectorAll('.pb-card'));
+  if (!wrap || !track || cards.length === 0) return;
+  const list = window.__photoBrowseList || [];
+  const n = cards.length;
 
-  const onDown = (clientX) => {
-    if (settling) return;
-    dragging = true; moved = false; dx = 0; startX = clientX;
+  // Stop any previous instance's animation loop (e.g. from before this re-render).
+  if (window.__pbStop) window.__pbStop();
+
+  let centerPos = Math.min(photoBrowseIndex, n - 1);
+  let target = centerPos;
+  let dragging = false, flinging = false, moved = false, stopped = false;
+  let velocity = 0; // index-units per ms
+  let startX = 0, startPos = 0;
+  let samples = [];
+  let lastT = performance.now();
+  let rafId = null;
+
+  function circDist(i, pos) { let d = i - pos; d = d - Math.round(d / n) * n; return d; }
+
+  function layout() {
+    cards.forEach((el, i) => {
+      const dist = circDist(i, centerPos);
+      const ad = Math.abs(dist);
+      if (ad > 3.6) { el.style.opacity = '0'; return; }
+      const size = Math.max(40, 96 - ad * 18);
+      const h = size * 1.35;
+      el.style.width = size + 'px';
+      el.style.height = h + 'px';
+      el.style.marginLeft = (-size / 2) + 'px';
+      el.style.marginTop = (-h / 2) + 'px';
+      el.style.opacity = String(Math.max(0, 1 - ad * 0.28));
+      el.style.zIndex = String(Math.round(100 - ad * 10));
+      el.style.boxShadow = ad < 0.3 ? 'var(--shadow-md)' : 'none';
+      el.style.border = ad < 0.3 ? '2px solid var(--border-accent)' : 'none';
+      el.style.transform = 'translateX(' + (dist * PHOTO_BROWSE_SPACING) + 'px)';
+    });
+    const rounded = ((Math.round(centerPos) % n) + n) % n;
+    const p = list[rounded];
+    if (p && nameEl) nameEl.textContent = genusText(p) + ' ' + p.name;
+  }
+
+  function animate(now) {
+    if (stopped) return;
+    const dt = Math.min(48, now - lastT);
+    lastT = now;
+    if (dragging) {
+      // held in place by onMove while the finger is down
+    } else if (flinging) {
+      centerPos += velocity * dt;
+      velocity *= Math.pow(0.12, dt / 1000); // gentle decay so a flick keeps flowing
+      if (Math.abs(velocity) < 0.0006) { flinging = false; target = Math.round(centerPos); }
+    } else {
+      const diff = target - centerPos;
+      const d = diff - Math.round(diff / n) * n;
+      centerPos += d * (1 - Math.pow(0.0008, dt / 1000));
+      if (Math.abs(d) < 0.0015) centerPos = target;
+    }
+    layout();
+    photoBrowseIndex = ((Math.round(centerPos) % n) + n) % n;
+    rafId = requestAnimationFrame(animate);
+  }
+
+  function onDown(clientX) {
+    dragging = true; flinging = false; moved = false; velocity = 0;
+    startX = clientX; startPos = centerPos;
     samples = [{ x: clientX, t: performance.now() }];
-    track.style.transition = 'none';
-  };
-  const onMove = (clientX) => {
+    wrap.style.cursor = 'grabbing';
+  }
+  function onMove(clientX) {
     if (!dragging) return;
-    dx = clientX - startX;
+    const dx = clientX - startX;
     if (Math.abs(dx) > 4) moved = true;
-    track.style.transform = 'translateX('+dx+'px)';
+    centerPos = startPos - dx / PHOTO_BROWSE_SPACING;
     samples.push({ x: clientX, t: performance.now() });
     if (samples.length > 6) samples.shift();
-  };
-  const onUp = () => {
+  }
+  function onUpEnd() {
     if (!dragging) return;
     dragging = false;
-    // velocity from the last ~80ms of movement, so a quick flick carries momentum
-    let velocity = 0;
+    wrap.style.cursor = 'grab';
+    let v = 0;
     if (samples.length >= 2) {
-      const last = samples[samples.length-1];
+      const last = samples[samples.length - 1];
       const ref = samples.find(s => last.t - s.t <= 80) || samples[0];
       const dt = last.t - ref.t;
-      if (dt > 0) velocity = (last.x - ref.x) / dt; // px/ms
+      if (dt > 0) v = (last.x - ref.x) / dt; // px/ms
     }
-    const projected = dx + velocity * 90; // project a bit further for a flick
-    const steps = -Math.round(projected / PHOTO_BROWSE_SPACING);
-    settling = true;
-    track.style.transition = 'transform 0.32s cubic-bezier(0.22, 1, 0.36, 1)';
-    track.style.transform = 'translateX(0)';
-    let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      track.removeEventListener('transitionend', finish);
-      settling = false;
-      if (steps !== 0) {
-        photoBrowseIndex = ((photoBrowseIndex + steps) % total + total) % total;
-        render();
-      }
-    };
-    track.addEventListener('transitionend', finish);
-    setTimeout(finish, 360); // fallback in case transitionend doesn't fire
-  };
+    const idxVelocity = -v / PHOTO_BROWSE_SPACING;
+    if (Math.abs(idxVelocity) > 0.01) { flinging = true; velocity = idxVelocity; }
+    else { flinging = false; target = Math.round(centerPos); }
+  }
 
   wrap.onpointerdown = (e) => onDown(e.clientX);
   wrap.onpointermove = (e) => onMove(e.clientX);
-  wrap.onpointerup = onUp;
-  wrap.onpointerleave = () => { if (dragging) onUp(); };
+  wrap.onpointerup = onUpEnd;
+  wrap.onpointerleave = () => { if (dragging) onUpEnd(); };
 
-  document.querySelectorAll('.pb-card').forEach(el => {
+  cards.forEach(el => {
     el.onclick = () => {
       if (moved) return;
-      const off = Number(el.dataset.off);
       const idx = Number(el.dataset.idx);
+      const off = Math.round(circDist(idx, centerPos));
       if (off === 0) {
-        const list = window.__photoBrowseList || [];
         const p = list[idx];
-        if (p) { view = { screen:'detail', plantId: p.id, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); }
+        if (p) { stopped = true; if (rafId) cancelAnimationFrame(rafId); view = { screen:'detail', plantId: p.id, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); }
       } else {
-        photoBrowseIndex = idx;
-        render();
+        flinging = false;
+        target = idx;
       }
     };
   });
+
+  window.__pbStop = () => { stopped = true; if (rafId) cancelAnimationFrame(rafId); };
+
+  layout();
+  rafId = requestAnimationFrame(animate);
 }
 
 function renderTaxonomyManage() {
