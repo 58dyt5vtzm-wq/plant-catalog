@@ -1080,6 +1080,10 @@ async function bindScanEvents() {
   document.getElementById('back-btn').onclick = () => { view = { screen:'list', plantId:null, mode:view.mode, query:view.query, sortBy:view.sortBy }; render(); };
   const video = document.getElementById('scan-video');
   const statusEl = document.getElementById('scan-status');
+  if (typeof jsQR !== 'function') {
+    statusEl.textContent = 'QR読み取り機能の読み込みに失敗しました。通信状況を確認して、アプリを再読み込みしてください。';
+    return;
+  }
   try {
     scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
     video.srcObject = scanStream;
@@ -1087,22 +1091,26 @@ async function bindScanEvents() {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const tick = () => {
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(imgData.data, imgData.width, imgData.height);
-        if (code && code.data) {
-          const found = findPlantFromScanText(code.data);
-          if (found) {
-            stopScan();
-            view = { screen:'detail', plantId: found.id, mode:view.mode, query:view.query, sortBy:view.sortBy };
-            render();
-            return;
-          } else {
-            statusEl.textContent = '一致する植物が見つかりません';
+      try {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+          if (code && code.data) {
+            const found = findPlantFromScanText(code.data);
+            if (found) {
+              stopScan();
+              view = { screen:'detail', plantId: found.id, mode:view.mode, query:view.query, sortBy:view.sortBy };
+              render();
+              return;
+            } else {
+              statusEl.textContent = '一致する植物が見つかりません';
+            }
           }
         }
+      } catch (err) {
+        console.error('QR scan error', err);
       }
       scanRAF = requestAnimationFrame(tick);
     };
