@@ -80,6 +80,7 @@ let tagHistoryExpanded = false;
 let expandedGroups = new Set();
 let tagAddOpenFor = null;
 let timelineViewerIndex = null;
+let photoBrowseIndex = 0;
 let taxonomyEditing = null;
 let taxonomyEditError = null;
 let taxonomyDeleteConfirm = null;
@@ -454,6 +455,35 @@ function plantCard(p) {
   return html;
 }
 
+// Camera-roll style photo carousel: a fixed set of slots (offsets -3..3 from the
+// center) mapped circularly onto the browsable list, so it wraps infinitely in both
+// directions. The track div (#pb-track) is dragged as one rigid block in bindListEvents;
+// on release the drag distance is converted into a step count and this is re-rendered.
+const PHOTO_BROWSE_SPACING = 46;
+function photoBrowseHtml(list, centerIdx) {
+  const n = list.length;
+  const offs = [-3,-2,-1,0,1,2,3];
+  const sizes = { 0:96, 1:72, 2:56, 3:44 };
+  let html = '<p style="font-size:12px; color:var(--text-secondary); margin:0 0 10px;">写真から探す</p>';
+  html += '<div id="pb-wrap" data-total="'+n+'" style="position:relative; height:130px; display:flex; align-items:center; justify-content:center; overflow:hidden; margin:0 -1rem 6px; touch-action:pan-y;">';
+  html += '<div id="pb-track" style="position:relative; width:100%; height:100%;">';
+  offs.forEach(off => {
+    const idx = ((centerIdx + off) % n + n) % n;
+    const p = list[idx];
+    const size = sizes[Math.abs(off)];
+    const opacity = off === 0 ? 1 : (1 - Math.abs(off) * 0.22);
+    const border = off === 0 ? 'border:2px solid var(--border-accent);' : '';
+    const shadow = off === 0 ? 'box-shadow:var(--shadow-md);' : '';
+    html += '<div class="pb-card" data-off="'+off+'" data-idx="'+idx+'" style="position:absolute; left:50%; top:50%; width:'+size+'px; height:'+(size*1.35)+'px; margin-left:'+(-size/2)+'px; margin-top:'+(-size*1.35/2)+'px; border-radius:'+(size>60?14:10)+'px; overflow:hidden; opacity:'+opacity+'; z-index:'+(10-Math.abs(off))+'; '+border+shadow+' cursor:pointer;">';
+    html += '<img src="'+p.photos[0]+'" style="width:100%; height:100%; object-fit:cover; display:block; pointer-events:none;" />';
+    html += '</div>';
+  });
+  html += '</div></div>';
+  const center = list[centerIdx];
+  html += '<p style="font-size:13px; font-weight:500; text-align:center; margin:0 0 16px; overflow-wrap:break-word;">'+escapeHtml(genusText(center))+' '+escapeHtml(center.name)+'</p>';
+  return html;
+}
+
 function emptyState(msg) {
   return '<div style="text-align:center; padding:2.5rem 1rem; color:var(--text-secondary);">' +
     '<i class="ti ti-seeding" style="font-size:32px; display:block; margin-bottom:12px; color:var(--text-muted);" aria-hidden="true"></i>' +
@@ -502,7 +532,17 @@ function renderList() {
   if (view.mode === 'all') {
     const filtered = sortPlants(plants.filter(p => matchesQuery(p, q)));
     if (filtered.length === 0) html += emptyState('該当する植物がありません');
-    else { html += '<div style="display:flex; flex-direction:column; gap:10px;">'; filtered.forEach(p => { html += plantCard(p); }); html += '</div>'; }
+    else {
+      const browsable = filtered.filter(p => p.photos && p.photos[0]);
+      if (!q && browsable.length > 3) {
+        if (photoBrowseIndex >= browsable.length) photoBrowseIndex = 0;
+        window.__photoBrowseList = browsable;
+        html += photoBrowseHtml(browsable, photoBrowseIndex);
+      }
+      html += '<div style="display:flex; flex-direction:column; gap:10px;">';
+      filtered.forEach(p => { html += plantCard(p); });
+      html += '</div>';
+    }
   } else if (view.mode === 'tag') {
     const tags = sortJa(allTags()); let any = false;
     tags.forEach(t => {
@@ -543,6 +583,55 @@ function bindListEvents() {
   document.querySelectorAll('.mode-btn').forEach(b => { b.onclick = () => { view.mode = b.dataset.key; expandedGroups = new Set(); render(); }; });
   document.querySelectorAll('.group-toggle').forEach(b => { b.onclick = () => { const k = b.dataset.key; if (expandedGroups.has(k)) expandedGroups.delete(k); else expandedGroups.add(k); render(); }; });
   document.querySelectorAll('.plant-card').forEach(el => { el.onclick = () => { view = { screen:'detail', plantId: el.dataset.id, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); }; });
+  bindPhotoBrowseEvents();
+}
+
+function bindPhotoBrowseEvents() {
+  const wrap = document.getElementById('pb-wrap');
+  const track = document.getElementById('pb-track');
+  if (!wrap || !track) return;
+  const total = Number(wrap.dataset.total) || 1;
+  let startX = 0, dx = 0, dragging = false, moved = false;
+
+  const onDown = (clientX) => { dragging = true; moved = false; dx = 0; startX = clientX; track.style.transition = 'none'; };
+  const onMove = (clientX) => {
+    if (!dragging) return;
+    dx = clientX - startX;
+    if (Math.abs(dx) > 4) moved = true;
+    track.style.transform = 'translateX('+dx+'px)';
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    const steps = -Math.round(dx / PHOTO_BROWSE_SPACING);
+    track.style.transition = 'transform 0.2s';
+    track.style.transform = 'translateX(0)';
+    if (steps !== 0) {
+      photoBrowseIndex = ((photoBrowseIndex + steps) % total + total) % total;
+      render();
+    }
+  };
+
+  wrap.onpointerdown = (e) => onDown(e.clientX);
+  wrap.onpointermove = (e) => onMove(e.clientX);
+  wrap.onpointerup = onUp;
+  wrap.onpointerleave = () => { if (dragging) onUp(); };
+
+  document.querySelectorAll('.pb-card').forEach(el => {
+    el.onclick = () => {
+      if (moved) return;
+      const off = Number(el.dataset.off);
+      const idx = Number(el.dataset.idx);
+      if (off === 0) {
+        const list = window.__photoBrowseList || [];
+        const p = list[idx];
+        if (p) { view = { screen:'detail', plantId: p.id, mode: view.mode, query: view.query, sortBy: view.sortBy }; render(); }
+      } else {
+        photoBrowseIndex = idx;
+        render();
+      }
+    };
+  });
 }
 
 function renderTaxonomyManage() {
