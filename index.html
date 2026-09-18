@@ -1053,7 +1053,7 @@ function renderScan() {
   html += '<button class="app-btn" id="back-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;"><i class="ti ti-arrow-left" style="font-size:18px;" aria-hidden="true"></i></button>';
   html += '<h3 style="margin:0; font-size:19px; font-weight:600;">QRコードを読み取る</h3></div>';
   html += '<div class="app-card" style="position:relative; width:100%; aspect-ratio:1; background:#000; overflow:hidden;">';
-  html += '<video id="scan-video" playsinline style="width:100%; height:100%; object-fit:cover;"></video>';
+  html += '<video id="scan-video" playsinline autoplay muted style="width:100%; height:100%; object-fit:cover;"></video>';
   html += '</div>';
   html += '<p id="scan-status" style="text-align:center; font-size:13px; color:var(--text-muted); margin-top:12px;">ラベルのQRコードを枠内に映してください</p>';
   return html;
@@ -1086,8 +1086,10 @@ async function bindScanEvents() {
   }
   try {
     scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.muted = true;
+    video.playsInline = true;
     video.srcObject = scanStream;
-    await video.play();
+    try { await video.play(); } catch (playErr) { console.error('video.play failed', playErr); }
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const tick = () => {
