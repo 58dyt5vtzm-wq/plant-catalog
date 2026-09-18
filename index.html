@@ -465,11 +465,11 @@ function plantCard(p) {
 // center) mapped circularly onto the browsable list, so it wraps infinitely in both
 // directions. The track div (#pb-track) is dragged as one rigid block in bindListEvents;
 // on release the drag distance is converted into a step count and this is re-rendered.
-const PHOTO_BROWSE_SPACING = 34;
+const PHOTO_BROWSE_SPACING = 40;
 function photoBrowseHtml(list, centerIdx) {
   const n = list.length;
   let html = '<p style="font-size:12px; color:var(--text-secondary); margin:0 0 10px;">写真から探す</p>';
-  html += '<div id="pb-wrap" style="position:relative; height:114px; overflow:hidden; margin:0 0 6px; touch-action:pan-y; cursor:grab;">';
+  html += '<div id="pb-wrap" style="position:relative; height:114px; overflow:hidden; margin:0 -1rem 6px; touch-action:pan-y; cursor:grab;">';
   html += '<div id="pb-track" style="position:relative; width:100%; height:100%;">';
   list.forEach((p, idx) => {
     html += '<div class="pb-card" data-idx="'+idx+'" style="position:absolute; left:50%; top:50%; border-radius:14px; overflow:hidden; opacity:0; cursor:pointer;">';
@@ -611,14 +611,14 @@ function bindPhotoBrowseEvents() {
     cards.forEach((el, i) => {
       const dist = circDist(i, centerPos);
       const ad = Math.abs(dist);
-      if (ad > 3.6) { el.style.opacity = '0'; return; }
-      const size = Math.max(34, 82 - ad * 15);
+      if (ad > 4.5) { el.style.opacity = '0'; return; }
+      const size = Math.max(28, 84 - ad * 14);
       const h = size * 1.35;
       el.style.width = size + 'px';
       el.style.height = h + 'px';
       el.style.marginLeft = (-size / 2) + 'px';
       el.style.marginTop = (-h / 2) + 'px';
-      el.style.opacity = String(Math.max(0, 1 - ad * 0.28));
+      el.style.opacity = String(Math.max(0.12, 1 - ad * 0.22));
       el.style.zIndex = String(Math.round(100 - ad * 10));
       el.style.boxShadow = ad < 0.3 ? 'var(--shadow-md)' : 'none';
       el.style.border = ad < 0.3 ? '2px solid var(--border-accent)' : 'none';
@@ -1565,7 +1565,7 @@ function bindDetailEvents() {
 
   if (!qrExpanded) return;
 
-  new QRCode(document.getElementById('qr-code'), { text: plantDeepLink(p), width: 120, height: 120 });
+  new QRCode(document.getElementById('qr-code'), { text: plantDeepLink(p), width: 120, height: 120, correctLevel: QRCode.CorrectLevel.L });
 
   document.getElementById('label-download-btn').onclick = () => {
     const scale = 10; // px per mm
@@ -1611,7 +1611,7 @@ function bindDetailEvents() {
     qrTemp.style.position = 'fixed';
     qrTemp.style.left = '-9999px';
     document.body.appendChild(qrTemp);
-    new QRCode(qrTemp, { text: plantDeepLink(p), width: qrSize, height: qrSize, colorDark: '#000000', colorLight: 'rgba(0,0,0,0)' });
+    new QRCode(qrTemp, { text: plantDeepLink(p), width: qrSize, height: qrSize, colorDark: '#000000', colorLight: 'rgba(0,0,0,0)', correctLevel: QRCode.CorrectLevel.L });
 
     const draw = () => {
       const qrImg = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
